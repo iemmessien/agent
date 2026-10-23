@@ -1,0 +1,42 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.initLogChannel = initLogChannel;
+exports.logLine = logLine;
+exports.logWarnLine = logWarnLine;
+/* =========================================================================
+ * v0.3.0 (P0.5) — canal de log dedicat ("Freekit" în Output)
+ * Toate log-urile extensiei trec prin aici: apar în Output → Freekit
+ * ȘI în consola Developer Tools (pentru debugging).
+ *
+ * Notă: `vscode` e importat DOAR ca tip și cerut lazy la runtime — astfel
+ * modulul poate fi încărcat și în teste Node, fără VS Code.
+ * ========================================================================= */
+let channel;
+/** Se apelează o dată, la activarea extensiei (în interiorul VS Code). */
+function initLogChannel() {
+    if (!channel) {
+        const v = require('vscode');
+        channel = v.window.createOutputChannel('Freekit', { log: true });
+    }
+    return channel;
+}
+function logLine(tag, msg) {
+    try {
+        channel?.info('[' + tag + '] ' + msg);
+    }
+    catch {
+        /* canalul nu e disponibil (ex: teste fără VS Code) */
+    }
+    console.log('[Freekit][' + tag + '] ' + msg);
+}
+/** v2.5.72 (FIX 2): linie de WARN (auto-unlock) — vizibilă ca atare în Output. */
+function logWarnLine(tag, msg) {
+    try {
+        channel?.warn('[' + tag + '] ' + msg);
+    }
+    catch {
+        /* canalul nu e disponibil (ex: teste fără VS Code) */
+    }
+    console.warn('[Freekit][' + tag + '] ' + msg);
+}
+//# sourceMappingURL=log.js.map

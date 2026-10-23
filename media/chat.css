@@ -1,0 +1,1985 @@
+/* =========================================================================
+ * Freekit — webview styles (v2.0.1, redesign după mockup)
+ *
+ * Structura: .side > .head / .chat / .composer
+ * Variabilele --vscode-* vin din tema VS Code (NU se hardcodează aici; se
+ * folosesc doar ca fallback în var(), ca mockup-ul să arate corect și în
+ * afara VS Code).
+ * ========================================================================= */
+
+:root {
+  --mono: var(--vscode-editor-font-family, "Cascadia Code", Consolas, "Courier New", monospace);
+}
+
+/* =========================================================================
+ * v2.5.50: codiconi în chat (monocrom, ca în meniurile VS Code) — înlocuiesc
+ * emoji-urile colorate de status. Mărime = textul chatului; culoarea urmează
+ * tema. Doar butoanele (fără itemii de meniu) își schimbă culoarea la hover.
+ * ========================================================================= */
+.codicon,
+.codicon[class*='codicon-'] {
+  font-size: 14px;
+  vertical-align: middle;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+}
+
+button:not(.mi):hover .codicon,
+a.pe-btn-link:hover .codicon {
+  color: var(--vscode-focusBorder, #007fd4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--vscode-sideBar-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.ic {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+.ic.sm {
+  width: 12px;
+  height: 12px;
+}
+
+/* ===== Shell ===== */
+.side {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  align-self: stretch;
+  background: var(--vscode-sideBar-background);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ===== Header ===== */
+.head {
+  height: 35px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 0 20px;
+  flex: none;
+}
+
+.title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.grow {
+  flex: 1;
+}
+
+.ibtn {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 0;
+}
+
+.ibtn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+  color: var(--vscode-foreground);
+}
+
+.ibtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ibtn[hidden] {
+  display: none;
+}
+
+.ibtn.has-dot::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-charts-blue, #3794ff);
+}
+
+/* ===== Chat ===== */
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/*
+ * v2.5.18 (bug #49): copiii direcți NU au voie să se comprime. Fără asta,
+ * flex column + `overflow: hidden` pe carduri (ex: .vstep) => minimum-size 0,
+ * iar la conținut peste viewport-ul panoului cardurile se striveau la ~2px
+ * („linii subțiri"). Containerul e scrollabil — scroll, nu compresie.
+ */
+.chat > * {
+  flex-shrink: 0;
+}
+
+.chat::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  border-radius: 4px;
+}
+
+.chat::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== Mesaje ===== */
+.msg {
+  word-break: break-word;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.msg.user {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.msg.ai,
+.msg.assistant {
+  white-space: pre-wrap;
+}
+
+.msg.md,
+.msg.ai.md,
+.msg.assistant.md {
+  white-space: normal;
+}
+
+.msg.ai p {
+  margin: 8px 0 0;
+}
+
+.msg.ai p:first-child {
+  margin-top: 0;
+}
+
+.msg.ai .dim {
+  color: var(--vscode-descriptionForeground);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.25));
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+pre.code {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.25));
+  border-radius: 6px;
+  overflow-x: auto;
+  font: 12px/1.5 var(--mono);
+}
+
+pre.code code {
+  background: none;
+  padding: 0;
+}
+
+/* Markdown randat (marked + DOMPurify) */
+.msg.md p {
+  margin: 6px 0;
+}
+
+.msg.md p:first-child {
+  margin-top: 0;
+}
+
+.msg.md p:last-child {
+  margin-bottom: 0;
+}
+
+.msg.md pre {
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.25));
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.msg.md pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.msg.md ul,
+.msg.md ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.msg.md li {
+  margin: 2px 0;
+}
+
+.msg.md a {
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+}
+
+.msg.md h1,
+.msg.md h2,
+.msg.md h3 {
+  margin: 10px 0 6px 0;
+}
+
+.msg.md blockquote {
+  margin: 8px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.2));
+  color: var(--vscode-descriptionForeground);
+}
+
+.msg.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.msg.md th,
+.msg.md td {
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.18));
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.msg.md th {
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.04));
+}
+
+.msg.md hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.18));
+  margin: 10px 0;
+}
+
+.msg.md img {
+  max-width: 100%;
+}
+
+/* indicator „streaming" pe răspunsul în curs */
+.msg.streaming .msg-body::after {
+  content: '▍';
+  opacity: 0.65;
+  animation: cursorBlink 1s steps(1) infinite;
+  margin-left: 1px;
+}
+
+@keyframes cursorBlink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ===== Head mesaj (avatar, nume, timp, acțiuni) ===== */
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.avatar svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+}
+
+.avatar-user {
+  background: rgba(255, 255, 255, 0.25);
+  color: inherit;
+}
+
+.avatar-ai {
+  background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+  color: #fff;
+}
+
+.msg-name {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.msg-time {
+  font-size: 10.5px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.9;
+}
+
+.msg.user .msg-name,
+.msg.user .msg-time {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* ===== Buton Copy ===== */
+.copy-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.copy-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground);
+}
+
+.copy-btn.copied {
+  color: #2ea043;
+}
+
+.copy-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* ===== Notificări (selector repair / terminal heal) ===== */
+.notice {
+  align-self: flex-start;
+  max-width: 92%;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  background: var(--vscode-editorWidget-background, transparent);
+  border: 1px dashed var(--vscode-editorWidget-border, var(--vscode-input-border, transparent));
+  animation: fadeIn 0.15s ease-out;
+}
+
+.notice.heal {
+  border-style: solid;
+  border-left: 3px solid var(--vscode-focusBorder, #3b82f6);
+  color: var(--vscode-foreground);
+}
+
+.ai-finder-card {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border, transparent));
+  border-left: 3px solid var(--vscode-progressBar-background, #3794ff);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, transparent);
+  color: var(--vscode-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-finder-card.success {
+  border-left-color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.ai-finder-card.failed,
+.ai-finder-card.timeout {
+  border-left-color: var(--vscode-editorError-foreground, #f14c4c);
+}
+
+.ai-finder-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+/* v2.5.11 (bug #28/#29): notificare cu buton de acțiune (model mic / hardware) */
+.notice.notice-actionable {
+  border-style: solid;
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+  color: var(--vscode-foreground);
+  align-self: stretch;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notice-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ===== v2.0.4: card „login required" (Chrome în față + Retry) ===== */
+.notice.login-required {
+  border-style: solid;
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+  color: var(--vscode-foreground);
+  align-self: stretch;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-required-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.retry-btn,
+.show-chrome-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.1s ease;
+}
+
+.retry-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.retry-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.show-chrome-btn {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+}
+
+.show-chrome-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+/* ===== v2.5.12 (bug #35): card „guest mode" (provider nelogat, composer activ) ===== */
+.notice.guest-mode {
+  border-style: solid;
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+  color: var(--vscode-foreground);
+  align-self: stretch;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.guest-mode-text {
+  white-space: pre-line;
+}
+
+.guest-mode-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.guest-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.1s ease;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.guest-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.guest-cancel-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.1s ease;
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.guest-cancel-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+/* ===== v2.5.15 (bug #41): card „chat memory full" (context epuizat) ===== */
+.notice.memory-full {
+  border-style: solid;
+  border-left: 3px solid var(--vscode-charts-orange, #ff8c00);
+  color: var(--vscode-foreground);
+  align-self: stretch;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-full-text {
+  white-space: pre-line;
+}
+
+.memory-full-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* ===== v2.5.1 — FIX 2b: card „provider error" (mesaje epuizate / rate limit) ===== */
+.provider-error-card {
+  padding: 12px;
+  border: 1px solid var(--vscode-charts-orange, #ff8c00);
+  border-radius: 6px;
+  margin: 8px 0;
+  background: rgba(255, 140, 0, 0.08);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.provider-error-card .pe-msg { margin: 6px 0; }
+.provider-error-card .pe-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+.provider-error-card .pe-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--vscode-button-border, #555);
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: none;
+}
+.provider-error-card .pe-btn:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+/* ===== Carduri de aprobare (fallback clasic) ===== */
+.msg.approval {
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-focusBorder);
+  align-self: stretch;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.msg.approval.resolved {
+  opacity: 0.55;
+  border-color: var(--vscode-panel-border);
+}
+
+.msg.approval.diff-review {
+  border-left: 3px solid var(--vscode-focusBorder, #3b82f6);
+}
+
+.msg.approval.pending-decision {
+  opacity: 0.85;
+}
+
+.approval-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-diff {
+  background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.25));
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre;
+  margin: 0 0 12px 0;
+  color: var(--vscode-editor-foreground);
+}
+
+.approval-diff::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.approval-diff::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 4px;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approve-btn,
+.reject-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.1s ease;
+}
+
+.approve-btn {
+  background: #2ea043;
+  color: white;
+}
+
+.approve-btn:hover:not(:disabled) {
+  background: #3fb950;
+}
+
+.reject-btn {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+}
+
+.reject-btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.approve-btn:disabled,
+.reject-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.approval-status {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ===== v2.5.6 (bug #10): avertisment „AI-ul a improvizat" (galben, mic) ===== */
+.divergence-warning {
+  margin: 0 0 12px 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+  border-radius: 4px;
+  background: var(
+    --vscode-inputValidation-warningBackground,
+    rgba(210, 153, 34, 0.12)
+  );
+  color: var(--vscode-editorWarning-foreground, #d29922);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+/* în rândul de „file change" avertismentul stă lipit sub rândul `.change` */
+.change-wrap .divergence-warning {
+  margin: 4px 0 0 0;
+}
+
+/* ===== v2.5.54 (FIX 13): thumbnail-uri capturi (screenshot / compare_visual) ===== */
+.visual-thumbs {
+  margin: 0 0 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+}
+
+.visual-thumbs-title {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.visual-thumbs-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.visual-thumb {
+  margin: 0;
+  max-width: 260px;
+  cursor: pointer;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--vscode-editor-background, transparent);
+}
+
+.visual-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 180px;
+  object-fit: cover;
+}
+
+.visual-thumb figcaption {
+  font-size: 11px;
+  padding: 4px 6px;
+  opacity: 0.85;
+}
+
+.visual-thumb:hover {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* ===== v2.0.1: rând inline de „file change" ===== */
+.change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 5px 6px 5px 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--vscode-editor-background);
+  font-size: 12px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+/* v2.5.6 (bug #10): rândul + avertismentul de divergență, unul sub altul */
+.change-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.change .fname {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.change .fname:hover {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+}
+
+.change .stats {
+  flex: none;
+  white-space: nowrap;
+}
+
+.add {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.del {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
+.acts {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.btn {
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.sec {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+}
+
+.btn.sec:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.state {
+  font-size: 11.5px;
+  color: var(--vscode-descriptionForeground);
+  padding-right: 4px;
+}
+
+.state.ok {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.state.bad {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
+/* ===== Typing indicator (3 puncte) ===== */
+.typing {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  animation: blink 1.2s infinite;
+}
+
+.typing i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes blink {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing i {
+    animation: none;
+  }
+}
+
+/* ===== Composer ===== */
+.composer {
+  flex: none;
+  padding: 6px 12px 12px;
+}
+
+.ctx {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 6px;
+}
+
+.pop {
+  position: relative;
+}
+
+/* v2.3.1: `.menu.up` trebuie să se întindă pe toată lățimea rândului de
+   chip-uri, nu doar a chip-ului. `.pop` e poziționat (referință pentru meniul
+   „down" din header), deci pentru rândul din composer îl facem static și mutăm
+   referința pe rând. Prefixul `.composer` e necesar: `.ctx` e folosit și de
+   meniul contextual (`.menu.ctx { position: fixed }`). */
+.composer .ctx {
+  position: relative;
+}
+
+.composer .ctx .pop {
+  position: static;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11.5px;
+  cursor: pointer;
+  max-width: 170px;
+}
+
+.chip:hover,
+.chip[aria-expanded="true"] {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+  color: var(--vscode-foreground);
+}
+
+.chip .lbl {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b6b6b;
+  flex: none;
+}
+
+.dot.green {
+  background: var(--vscode-charts-green, #89d185);
+}
+
+.dot.blue {
+  background: var(--vscode-charts-blue, #3794ff);
+}
+
+.dot.orange {
+  background: var(--vscode-charts-orange, #d18616);
+}
+
+.dot.red {
+  background: var(--vscode-charts-red, #f14c4c);
+}
+
+.auto .track {
+  width: 20px;
+  height: 11px;
+  border-radius: 6px;
+  background: #5a5a5a;
+  position: relative;
+  transition: background 0.15s;
+  flex: none;
+}
+
+.auto .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ddd;
+  transition: left 0.15s;
+}
+
+.auto[aria-pressed="true"] {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.auto[aria-pressed="true"] .track {
+  background: var(--vscode-charts-orange, #d18616);
+}
+
+.auto[aria-pressed="true"] .knob {
+  left: 11px;
+}
+
+.box {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 8px;
+  padding: 8px 8px 6px;
+}
+
+.box:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* v2.4.3: animație border cât timp AI-ul generează */
+.box.busy {
+  position: relative;
+  border-color: transparent !important;
+}
+
+/* Gradient animat pe border (conic) */
+.box.busy::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 8px;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--angle, 0deg),
+    transparent 0%,
+    var(--vscode-focusBorder, #007fd4) 25%,
+    transparent 50%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: rotate 2s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes rotate {
+  to { --angle: 360deg; }
+}
+
+/* Fallback pentru browsere fără @property (pulse simplu) */
+@supports not (background: conic-gradient(from var(--angle), red, blue)) {
+  .box.busy {
+    animation: pulseBorder 1.5s ease-in-out infinite;
+  }
+  @keyframes pulseBorder {
+    0%, 100% { border-color: var(--vscode-input-border, #3c3c3c); }
+    50%      { border-color: var(--vscode-focusBorder, #007fd4); }
+  }
+}
+
+.box textarea {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  max-height: 140px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  line-height: 1.45;
+  padding: 0 2px;
+  overflow-y: auto;
+}
+
+.box textarea::placeholder {
+  color: var(--vscode-input-placeholderForeground, #8a8a8a);
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.bar .ibtn {
+  width: 26px;
+  height: 26px;
+}
+
+.bar .ibtn.recording {
+  color: var(--vscode-charts-red, #f14c4c);
+  animation: micPulse 1.2s infinite ease-in-out;
+}
+
+.bar .ibtn.transcribing {
+  opacity: 0.8;
+  animation: micBlink 1s infinite ease-in-out;
+}
+
+@keyframes micPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(229, 83, 75, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(229, 83, 75, 0);
+  }
+}
+
+@keyframes micBlink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.send {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  margin-left: 2px;
+  padding: 0;
+}
+
+.send:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* evidențiere la drag & drop peste zona de input */
+.composer.drag-over {
+  background: color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent);
+}
+
+.composer.drag-over .box {
+  border-color: var(--vscode-focusBorder);
+  border-style: dashed;
+}
+
+/* ===== Meniuri ===== */
+/* v2.3.1: fără lățime fixă (210px) — meniul se întinde cât containerul lui
+   (rândul de chip-uri / sidebar-ul), iar numele lungi fac ellipsis, nu wrap. */
+.menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  width: auto;
+  padding: 6px;
+  display: none;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #2b2b2b));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-menu-border, #454545));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.menu.open {
+  display: block;
+}
+
+/* Meniul „⋯" din header: aliniat dreapta, lățime mărginită (nu se întinde).
+   `min()` ține meniul în viewport și pe o sidebar foarte îngustă. */
+.menu.down {
+  top: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  min-width: min(240px, calc(100vw - 24px));
+  max-width: min(320px, calc(100vw - 24px));
+}
+
+/* Meniurile chip-urilor din composer (model / thinking): „panou" vertical pe
+   toată lățimea rândului `.ctx` — left+right + width:auto întind elementul. */
+.menu.up {
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mh {
+  padding: 6px 8px 3px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--vscode-widget-border, #454545);
+}
+
+.mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  /* v2.3.1: un singur rând per item (numele de model nu se mai rupe pe 2 rânduri) */
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.mi:hover,
+.mi:focus-visible {
+  background: var(--vscode-menu-selectionBackground, rgba(4, 57, 94, 0.8));
+  outline: 0;
+}
+
+.mi .sub {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  /* badge-ul nu se comprimă când eticheta face ellipsis */
+  flex-shrink: 0;
+}
+
+/* v2.3.1: eticheta flexibilă face ellipsis (numele lungi de model / provider).
+   `title` cu textul complet e pus din chat.js (`syncOverflowTitles`). */
+.mi .lbl {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* v2.2.0: sub-rând de model web, indentat sub providerul activ */
+.mi.bm {
+  padding-left: 26px;
+}
+
+.mi.bm .lbl {
+  font-size: 11.5px;
+}
+
+.mi.bm .sub.badge {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  opacity: 0.7;
+}
+
+.mi .ck {
+  visibility: hidden;
+}
+
+.mi[aria-checked="true"] .ck {
+  visibility: visible;
+}
+
+.mi.plain .ck {
+  display: none;
+}
+
+/* `.mi { display: flex }` bate regula UA pentru [hidden] → o repunem explicit */
+.mi[hidden] {
+  display: none;
+}
+
+/* v2.0.3: iconițele din meniuri sunt CODNICONS (@vscode/codicons), nu SVG-uri */
+.mi .codicon {
+  flex: none;
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  color: inherit;
+}
+
+/* bifa din meniurile radio (thinking level / model / conversații) */
+.mi .codicon.ck {
+  font-size: 12px;
+  width: 12px;
+  height: 12px;
+  line-height: 12px;
+}
+
+/* v2.0.3: meniul contextual (dreapta-click pe o conversație) — poziționat la cursor */
+.menu.ctx {
+  position: fixed;
+  z-index: 40;
+  min-width: 190px;
+}
+
+/* v2.0.2: notă ne-interactivă în meniul de model (starea Ollama / hardware) */
+.mnote {
+  padding: 4px 8px 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+  white-space: normal;
+}
+
+#model-hw {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-widget-border, #454545);
+}
+
+/* v2.5.11 (bug #29): avertismentul CPU/RAM (mașini fără GPU) — vizibil, nu
+   doar în tooltip */
+#model-advice.warn {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-widget-border, #454545);
+  color: var(--vscode-editorWarning-foreground, #d29922);
+}
+
+/* ===== Buton „mesaje noi" (scroll inteligent) ===== */
+#jump {
+  position: absolute;
+  right: 16px;
+  bottom: 96px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.15));
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+#jump[hidden] {
+  display: none;
+}
+
+#jump .ic {
+  transform: rotate(180deg);
+}
+
+/* ===== Atașamente (chip-uri) — scop propriu, ca să nu între în conflict
+       cu .chip din composer ===== */
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 8px 0;
+}
+
+#attachments[hidden] {
+  display: none;
+}
+
+#attachments .chip,
+.msg-chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: auto;
+  background: var(--vscode-badge-background, rgba(255, 255, 255, 0.08));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  padding: 3px 6px 3px 8px;
+  font-size: 11.5px;
+  cursor: default;
+  animation: fadeIn 0.12s ease-out;
+}
+
+#attachments .chip-icon {
+  flex-shrink: 0;
+}
+
+#attachments .chip-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#attachments .chip-size {
+  opacity: 0.7;
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+
+#attachments .chip-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+#attachments .chip-x:hover {
+  opacity: 1;
+}
+
+.chip-static {
+  cursor: default;
+}
+
+/* chip-urile de pe mesajul utilizatorului (snapshot la trimitere) */
+.msg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.msg .chip-static {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: transparent;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+/* ===== v1.7.1: Verbose mode — pașii AI în chat ===== */
+.vstep {
+  align-self: stretch;
+  margin: 2px 0;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-left: 3px solid var(--vscode-descriptionForeground, #888);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.02));
+  font-size: 11px;
+  animation: fadeIn 0.15s ease-out;
+  overflow: hidden;
+}
+
+.vstep-thinking {
+  border-left-color: #a371f7;
+}
+
+.vstep-executing {
+  border-left-color: #d29922;
+}
+
+.vstep-result {
+  border-left-color: #3b82f6;
+}
+
+.vstep-decision {
+  border-left-color: #2ea043;
+}
+
+/* v1.10.3: cardul „Thinking" colapsabil (chevron codicon + durată) */
+.vstep.thinking-card > .vstep-head {
+  list-style: none;
+}
+
+.vstep.thinking-card > .vstep-head::-webkit-details-marker {
+  display: none;
+}
+
+.vstep.thinking-card > .vstep-head::marker {
+  content: '';
+}
+
+.vstep-arrow {
+  flex-shrink: 0;
+  width: 14px;
+  font-family: 'codicon';
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+/* v2.5.50: chevron codicon (înlocuiește glifele vechi) — jos extins, dreapta pliat */
+.vstep-arrow::before {
+  content: '\eab4'; /* codicon-chevron-down */
+}
+
+.vstep.collapsed .vstep-arrow::before {
+  content: '\eab6'; /* codicon-chevron-right */
+}
+
+.vstep.thinking-card:not([open]) > .vstep-head .vstep-arrow::before {
+  content: '\eab6'; /* codicon-chevron-right */
+}
+
+.thinking-duration {
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground, #aaa);
+  font-variant-numeric: tabular-nums;
+}
+
+/* v2.0.1: preview text cât timp cardul „Thinking" e pliat (mockup .prev) */
+.vstep.thinking-card .prev {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.vstep.thinking-card[open] .prev {
+  display: none;
+}
+
+.vstep-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  /* v2.5.18 (bug #49): 30px + 2×1px border = rând compact de 32px */
+  min-height: 30px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.vstep-head:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+
+.vstep-head:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.06));
+}
+
+.vstep-icon {
+  flex-shrink: 0;
+}
+
+.vstep-label {
+  flex-shrink: 0;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  font-size: 9.5px;
+  opacity: 0.85;
+}
+
+.vstep-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground, #aaa);
+}
+
+.vstep-status {
+  flex-shrink: 0;
+}
+
+/*
+ * v2.5.18 (bug #49): sumarul din header — vizibil DOAR când pasul e pliat
+ * (prima linie din detalii, trunchiată); titlul e limitat ca să încapă amândouă.
+ */
+.vstep-summary {
+  display: none;
+}
+
+.vstep.collapsed .vstep-title {
+  flex: 0 1 auto;
+  max-width: 45%;
+}
+
+.vstep.collapsed .vstep-summary {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.vstep.status-running .vstep-status {
+  animation: vstepPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes vstepPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.vstep-body {
+  padding: 4px 8px 6px 22px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  border-top: 1px dashed var(--vscode-input-border, rgba(255, 255, 255, 0.08));
+}
+
+.vstep.collapsed .vstep-body {
+  display: none;
+}
+
+/* ===== v1.4.0: buton Restore (checkpoint git) ===== */
+.restore-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.restore-btn:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+.restore-btn.restored {
+  opacity: 1;
+}
+
+.restore-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* ===== v1.5.0: buton Speak (text-to-speech) ===== */
+.speak-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.speak-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground);
+}
+
+.speak-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.speak-btn.speaking {
+  color: #f59e0b;
+  animation: speakPulse 1s infinite ease-in-out;
+}
+
+@keyframes speakPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ===== v1.9.0: acțiuni pe mesajele user (edit / fork / restore) ===== */
+.msg-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.msg.user:hover .msg-actions,
+.msg.user:focus-within .msg-actions {
+  opacity: 1;
+}
+
+.msg-actions .restore-btn {
+  margin-left: 0;
+}
+
+.edit-btn,
+.fork-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.edit-btn:hover,
+.fork-btn:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+.edit-btn svg,
+.fork-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* ===== v1.9.0: editorul inline de prompt ===== */
+.edit-area {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 220px;
+  resize: vertical;
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.edit-textarea:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.edit-save,
+.edit-cancel {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.edit-save {
+  background: #2ea043;
+  color: #fff;
+}
+
+.edit-save:hover:not(:disabled) {
+  background: #3fb950;
+}
+
+.edit-save:disabled,
+.edit-cancel:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.edit-cancel {
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+}
+
+.edit-cancel:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+/* =========================================================================
+ * Alias pentru clasele de thinking card din mockup (.think), ca structura să
+ * funcționeze identic dacă e randată cu numele din mockup. Cardul real din
+ * chat folosește în continuare .vstep.thinking-card (v1.10.3).
+ * ========================================================================= */
+.think {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.think summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  user-select: none;
+}
+
+.think summary::-webkit-details-marker {
+  display: none;
+}
+
+.think summary:hover {
+  color: var(--vscode-foreground);
+}
+
+.think .chev {
+  transition: transform 0.15s;
+  transform: rotate(-90deg);
+}
+
+.think[open] .chev {
+  transform: none;
+}
+
+.think .time {
+  opacity: 0.7;
+}
+
+.think .prev {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.think[open] .prev {
+  display: none;
+}
+
+.think .body {
+  padding: 0 10px 8px 26px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--vscode-descriptionForeground);
+}

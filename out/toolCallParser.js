@@ -1,0 +1,1193 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LARGE_OUTPUT_CHARS = exports.MAX_MALFORMED_RETRIES = exports.MALFORMED_TOOL_CALL_ERROR = void 0;
+exports.drainParserLogs = drainParserLogs;
+exports.reconstructCommandTabs = reconstructCommandTabs;
+exports.reconstructCommandBackspace = reconstructCommandBackspace;
+exports.largeOutputNotice = largeOutputNotice;
+exports.classifyMalformedAttempt = classifyMalformedAttempt;
+exports.malformedRetryNudge = malformedRetryNudge;
+exports.parseMarkerToolCall = parseMarkerToolCall;
+exports.looksLikeMarkerToolCallAttempt = looksLikeMarkerToolCallAttempt;
+exports.parseToolCallText = parseToolCallText;
+exports.looksLikeToolCallAttempt = looksLikeToolCallAttempt;
+const tsAlias_1 = require("./tsAlias");
+/* =========================================================================
+ * v2.5.32 FIX (bug #79) — TAB într-o cale din comandă (bug de parser)
+ * `"del bootcamp-test\test.ts"` e JSON INVALID-valid: `\t` e interpretat ca
+ * TAB, deci comanda ajunge la execuție ca `del bootcamp-test<TAB>est.ts` —
+ * fișierul nu există și comanda eșuează („cannot find the file"). Aici
+ * reconstruim secvența originală: TAB-ul ține locul lui `\` + `t` (separator +
+ * litera „t" înghițită de escape), deci TAB → `\t` pe Windows, `t` precedat de
+ * `/` pe Unix (`/test.ts`).
+ * ========================================================================= */
+/** Log-urile parserului (drenate de chatView, ca la tsAlias). */
+const pendingLogs = [];
+const loggedMessages = new Set();
+function queueParserLog(msg, dedupe = true) {
+    if (dedupe) {
+        if (loggedMessages.has(msg))
+            return;
+        loggedMessages.add(msg);
+    }
+    pendingLogs.push(msg);
+}
+/** Mesajele de log acumulate de parser (le golește). */
+function drainParserLogs() {
+    return pendingLogs.splice(0, pendingLogs.length);
+}
+/**
+ * v2.5.32 FIX (bug #79): reconstruiește TAB-urile suspecte dintr-o comandă.
+ * Un TAB precedat de un caracter non-alb e aproape sigur un `\t` din JSON
+ * (indentarea cu TAB, adică TAB la început de segment, rămâne neatinsă).
+ */
+function reconstructCommandTabs(command) {
+    const text = String(command ?? '');
+    if (!text.includes('\t'))
+        return text;
+    const sep = process.platform === 'win32' ? '\\' : '/';
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch !== '\t') {
+            out += ch;
+            continue;
+        }
+        const prev = i > 0 ? text[i - 1] : '';
+        out += prev && !/\s/.test(prev) ? sep + 't' : ch;
+    }
+    return out;
+}
+/**
+ * v2.5.59 — BS / FF rămase într-o comandă vin aproape sigur din `\b` / `\f`
+ * „parse-uite" ca escape-uri valide într-un path Windows (`\bitwanderer` →
+ * `home` + BS + `itwanderer`). Reconstruim `\b` / `\f` ca la TAB-uri.
+ */
+function reconstructCommandBackspace(command) {
+    const text = String(command ?? '');
+    if (!text.includes('\b') && !text.includes('\f'))
+        return text;
+    const sep = process.platform === 'win32' ? '\\' : '/';
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch !== '\b' && ch !== '\f') {
+            out += ch;
+            continue;
+        }
+        const prev = i > 0 ? text[i - 1] : '';
+        out += prev && !/\s/.test(prev) ? sep + (ch === '\b' ? 'b' : 'f') : ch;
+    }
+    return out;
+}
+/** Aplică reconstrucțiile (TAB + BS/FF) pe `args.command` (dacă există). */
+function withCommandTabsFixed(call) {
+    const args = call.args;
+    if (!args || typeof args.command !== 'string')
+        return call;
+    let command = args.command;
+    const tabsFixed = reconstructCommandTabs(command);
+    if (tabsFixed !== command) {
+        queueParserLog('parser: reconstructed tab in command: ' + tabsFixed);
+        command = tabsFixed;
+    }
+    const escapesFixed = reconstructCommandBackspace(command);
+    if (escapesFixed !== command) {
+        queueParserLog('parser: reconstructed backspace/form-feed in command: ' + escapesFixed);
+        command = escapesFixed;
+    }
+    if (command === args.command)
+        return call;
+    return { tool: call.tool, args: { ...args, command } };
+}
+/* =========================================================================
+ * v2.4.8 — Extractor robust de tool call
+ * Parser-ul vechi (chatView.parseToolCall) presupunea că răspunsul întreg e
+ * JSON-ul tool call-ului: orice text în plus (proză, fence markdown) sau un
+ * `content` cu acolade nested + ghilimele escapate => „NO TOOL CALL DETECTED".
+ * Extractorul de aici caută obiectul JSON al tool call-ului în interiorul
+ * răspunsului, cu acolade ECHILIBRATE (ignoră acoladele din string-uri și
+ * respectă escape-ul \"):
+ *   1. conținutul blocurilor ```...``` (fence markdown);
+ *   2. obiectele echilibrate care încep cu cheia „tool";
+ *   3. ultimul {...} echilibrat din text;
+ *   4. tot textul (după eliminarea unui fence de la început).
+ * Fiecare candidat e încercat cu JSON.parse, apoi cu reparații tolerante
+ * pentru caracterele de control reale (newline/TAB) și ghilimelele
+ * neescapatе din valori. Dacă nimic nu parsează, apelantul primește
+ * MALFORMED_TOOL_CALL_ERROR ca mesaj clar pentru utilizator.
+ * v2.4.9: pentru uneltele cu conținut liber (write_file / edit_file /
+ * write_files) există și formatul marker-based (`TOOL: ... / CONTENT: ...
+ * END_CONTENT`), verificat PRIORITAR — vezi secțiunea dedicată de mai jos.
+ * v2.5.26 (bug #51): promptul cere „ACTION:" (cuvântul „tool" declanșa refuzul
+ * ChatGPT); parserul acceptă ambele prefixe, iar JSON-ul cu cheia „action" e
+ * normalizat la {tool, args} — vechiul `{"tool": ...}` rămâne valid.
+ * ========================================================================= */
+/** Mesaj afișat utilizatorului când răspunsul e clar o încercare de tool call
+ *  care nu poate fi parsat nici după reparațiile tolerante. */
+exports.MALFORMED_TOOL_CALL_ERROR = 'Model returned malformed tool call. Try again or switch provider.';
+/** v2.5.26 (bug #51): promptul vorbește de „actions" (ca ChatGPT să nu refuze),
+ *  dar parserul acceptă în continuare și vechiul prefix „TOOL:" (retrocompat). */
+const MARKER_PREFIX = '(?:TOOL|ACTION)';
+/**
+ * v2.5.48: câte reluări facem înainte de a afișa MALFORMED_TOOL_CALL_ERROR.
+ * Ridicat de la 1 la 3 — un răspuns trunchiat (write_file mare) merită câteva
+ * încercări, fiecare cu mesajul explicit de împărțire.
+ */
+exports.MAX_MALFORMED_RETRIES = 3;
+/**
+ * v2.5.48: peste atâtea caractere un răspuns de tip write_file e considerat
+ * „output prea mare" — site-ul îl trunchiază, tool call-ul iese malformat.
+ */
+exports.LARGE_OUTPUT_CHARS = 15000;
+/**
+ * v2.5.48: sugestia trimisă modelului când output-ul lui e prea mare. Cerută
+ * explicit și la fiecare reluare de „malformed tool call".
+ */
+function largeOutputNotice(chars) {
+    return ('SYSTEM NOTICE — OUTPUT TOO LARGE.\n\n' +
+        'Output too large (' +
+        chars +
+        ' chars). Split into smaller write_file calls or use write_files batch.\n' +
+        'Your previous output was truncated (' +
+        chars +
+        ' chars) — keep every write_file under ' +
+        exports.LARGE_OUTPUT_CHARS +
+        ' characters and send the rest in a second call.');
+}
+/** Uneltele cu conținut liber — singurele care folosesc formatul marker. */
+const WRITE_INTENT_TOOLS = new Set(['write_file', 'edit_file', 'write_files']);
+/** Uneltele care așteaptă JSON single-line (restul, plus orice `git_*`). */
+const JSON_INTENT_TOOLS = new Set([
+    'read_file',
+    'read_files',
+    'list_files',
+    'search_files',
+    'search_semantic',
+    'run_command',
+    'run_npm',
+    'copy_file',
+    'delete_file',
+    'delete_directory',
+    'project_info',
+    'open_workspace',
+    'screenshot',
+    'compare_visual'
+]);
+/** Numele uneltei din textul parțial (`"action":"X"` sau `ACTION: X`). */
+function extractAttemptedTool(text) {
+    const json = /["'](?:action|tool)["']\s*:\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/.exec(text);
+    if (json)
+        return json[1].toLowerCase();
+    const marker = /^[ \t]*(?:ACTION|TOOL)[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*)/im.exec(text);
+    return marker ? marker[1].toLowerCase() : undefined;
+}
+/** Prima cale din textul parțial (`"path"`/`"paths"` JSON sau `PATH:` marker). */
+function extractAttemptedPath(text) {
+    const jsonPath = /["'](?:path|file|filePath)["']\s*:\s*["']([^"'\r\n]{1,400})["']/i.exec(text);
+    if (jsonPath)
+        return jsonPath[1].trim();
+    const jsonPaths = /["']paths["']\s*:\s*\[\s*["']([^"'\r\n]{1,400})["']/i.exec(text);
+    if (jsonPaths)
+        return jsonPaths[1].trim();
+    const marker = /^[ \t]*PATH[ \t]*:[ \t]*(.+)$/im.exec(text);
+    return marker ? marker[1].trim() : undefined;
+}
+/** Unealta e în formatul JSON single-line? (orice în afară de write ops) */
+function isJsonFormatTool(tool) {
+    return !!tool && !WRITE_INTENT_TOOLS.has(tool) &&
+        (JSON_INTENT_TOOLS.has(tool) || tool.startsWith('git_'));
+}
+/**
+ * v2.5.56 (FIX 1): clasifică încercarea malformată — ce format trebuie cerut
+ * la reluare (read = JSON single-line, write = marker), ce unealtă încerca
+ * modelul și spre ce cale se îndrepta.
+ */
+function classifyMalformedAttempt(text) {
+    const src = String(text ?? '');
+    const tool = extractAttemptedTool(src);
+    const path = extractAttemptedPath(src) || firstPathInText(src);
+    if (tool && WRITE_INTENT_TOOLS.has(tool)) {
+        return { intent: 'write', tool, path };
+    }
+    if (isJsonFormatTool(tool)) {
+        return { intent: 'read', tool, path };
+    }
+    // Fără nume de unealtă (sau nume necunoscut): deducem din formă.
+    // Conținutul multiline (fence sau 3+ rânduri) poate fi doar o scriere.
+    if (src.includes('```') || src.split(/\r?\n/).length >= 3) {
+        return { intent: 'write', tool, path };
+    }
+    if (path || /\b(?:read|cit)/i.test(src)) {
+        return { intent: 'read', tool, path };
+    }
+    return { intent: 'unknown', tool, path };
+}
+/** Prima cale dintr-un mesaj obișnuit (exemplul concret din reluarea 2). */
+function firstPathInText(text) {
+    const m = /(?:^|[\s"'`([])((?:[\w.@~+-]+\/)+[\w.@~+-]+\.[A-Za-z0-9]{1,10})/.exec(String(text ?? ''));
+    return m ? m[1] : undefined;
+}
+/** Escape pentru un exemplu JSON inline. */
+function jsonEscape(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+/** Argumentele exemplului concret pentru o unealtă JSON. */
+function exampleArgs(tool, path) {
+    if (!path)
+        return '{...}';
+    if (tool === 'list_files')
+        return '{"dir":"' + jsonEscape(path) + '"}';
+    if (tool === 'search_files' || tool === 'search_semantic')
+        return '{...}';
+    return '{"path":"' + jsonEscape(path) + '"}';
+}
+/** Exemplul de format pentru unealta detectată (JSON sau marker). */
+function jsonExampleCall(tool, path) {
+    const name = isJsonFormatTool(tool) ? tool : 'read_file';
+    return '{"action":"' + name + '","args":' + exampleArgs(name, path) + '}';
+}
+/** Blocul marker al unealtei de scriere detectate (conținut RAW în fence). */
+function writeMarkerTemplate(tool, path) {
+    const name = tool && WRITE_INTENT_TOOLS.has(tool) ? tool : 'write_file';
+    if (name === 'edit_file') {
+        return ('ACTION: edit_file\n' +
+            'PATH: ' + path + '\n' +
+            'OLD_TEXT:\n```text\n<exact old text — copy it from the file>\n```\nEND_OLD_TEXT\n' +
+            'NEW_TEXT:\n```text\n<new text>\n```\nEND_NEW_TEXT');
+    }
+    if (name === 'write_files') {
+        return ('ACTION: write_files\n' +
+            '---FILE---\n' +
+            'PATH: ' + path + '\n' +
+            'CONTENT:\n```text\n<raw content, no escaping>\n```\nEND_CONTENT');
+    }
+    return ('ACTION: write_file\n' +
+        'PATH: ' + path + '\n' +
+        'CONTENT:\n```text\n<raw content, no escaping>\n```\nEND_CONTENT');
+}
+/** Promptul de reluare pentru uneltele JSON (read ops). */
+function readJsonNudge(attempt) {
+    const name = isJsonFormatTool(attempt.tool) ? attempt.tool : '<NAME>';
+    return ('Your previous reply was not a valid tool call. For this action, use SINGLE-LINE JSON (no marker format, no code fence, no explanation):\n\n' +
+        '{"action":"' + name + '","args":{...}}\n\n' +
+        'Example: {"action":"read_file","args":{"path":"src/foo.ts"}}\n\n' +
+        'Reply with ONE JSON line only.');
+}
+/** Promptul de reluare pentru uneltele de scriere (format marker). */
+function writeMarkerNudge(attempt) {
+    return ('Your previous reply was not a valid tool call. For file writes use the MARKER format exactly:\n\n' +
+        writeMarkerTemplate(attempt.tool, '<path>') +
+        '\n\nONE action. No explanation before it. No code fence around the whole reply.');
+}
+/** Reluarea 3 (FIX 2): un singur format, nimic altceva. */
+function finalAttemptNudge(attempt, path) {
+    if (attempt.intent === 'write') {
+        return ('Your previous reply was not a valid tool call. FINAL ATTEMPT. Reply with THIS format exactly and nothing else:\n\n' +
+            writeMarkerTemplate(attempt.tool, path || '<path>'));
+    }
+    return ('Your previous reply was not a valid tool call. FINAL ATTEMPT. Reply with EXACTLY this format: ' +
+        jsonExampleCall(attempt.tool, path) +
+        ' Nothing else.');
+}
+/**
+ * v2.5.56 (FIX 1/2): mesajul de reluare pentru încercarea `retry` (1..3) a
+ * unui tool call malformat. `taskText` = mesajul utilizatorului (pentru
+ * exemplul concret din reluarea 2, când textul malformat nu conține calea).
+ */
+function malformedRetryNudge(attempt, retry, taskText = '') {
+    const path = attempt.path || firstPathInText(taskText);
+    if (retry >= 3)
+        return finalAttemptNudge(attempt, path);
+    const base = attempt.intent === 'write' ? writeMarkerNudge(attempt) : readJsonNudge(attempt);
+    if (retry < 2)
+        return base;
+    // Reluarea 2 (FIX 2): același prompt + exemplul concret al task-ului curent.
+    return (base +
+        '\n\nConcrete example for the current task:\n' +
+        (attempt.intent === 'write'
+            ? '\n' + writeMarkerTemplate(attempt.tool, path || '<path>')
+            : jsonExampleCall(attempt.tool, path)));
+}
+/** Început de obiect JSON cu cheia „tool” (acceptă și spații în plus). */
+const TOOL_MARKER_HEAD_RE = /^\{\s*["']?tool["']?\s*:/;
+/** v2.5.26 (bug #51): început de obiect JSON cu cheia „action" (promptul nou). */
+const ACTION_MARKER_HEAD_RE = /^\{\s*["']?action["']?\s*:/;
+/** Cât ne uităm înainte la începutul unui obiect când căutăm cheia „tool”. */
+const TOOL_HEAD_WINDOW = 64;
+/**
+ * Parcurge textul o singură dată (string-aware, respectă `\"`) și întoarce
+ * toate obiectele `{...}` încheiate, în ordinea închiderii. Acoladele din
+ * interiorul string-urilor sunt ignorate — exact ce rupea regex-ul naiv pe
+ * `content` cu JSON nested.
+ */
+function scanObjects(text) {
+    const spans = [];
+    const stack = [];
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (inString) {
+            if (ch === '\\') {
+                escaped = true;
+            }
+            else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === '{') {
+            stack.push(i);
+        }
+        else if (ch === '}') {
+            const start = stack.pop();
+            if (start !== undefined)
+                spans.push({ start, end: i });
+        }
+    }
+    return spans;
+}
+/** Conținutul blocurilor ```...``` (fence markdown), în ordine. */
+function fencedBodies(text) {
+    const bodies = [];
+    const re = /```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n?([\s\S]*?)```/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        if (m[1] && m[1].trim())
+            bodies.push(m[1]);
+    }
+    return bodies;
+}
+/** Textul fără un eventual fence markdown de la început / final. */
+function stripLeadingFence(text) {
+    return text
+        .replace(/^\s*```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n?/, '')
+        .replace(/\r?\n?```\s*$/, '')
+        .trim();
+}
+/** Primul caracter care nu e spațiu alb, de la `from` înainte. */
+function nextNonSpace(text, from) {
+    for (let i = from; i < text.length; i++) {
+        if (!/\s/.test(text[i]))
+            return text[i];
+    }
+    return undefined;
+}
+/**
+ * Escapează caracterele de control REALE (newline / CR / TAB) din interiorul
+ * string-urilor JSON — providerii web le emit des așa în `content`, ceea ce
+ * face `JSON.parse` să eșueze. În afara string-urilor textul rămâne neatins.
+ */
+function repairControlChars(json) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < json.length; i++) {
+        const ch = json[i];
+        if (escaped) {
+            out += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            out += ch;
+            escaped = true;
+            continue;
+        }
+        if (!inString) {
+            if (ch === '"')
+                inString = true;
+            out += ch;
+            continue;
+        }
+        if (ch === '"') {
+            inString = false;
+            out += ch;
+            continue;
+        }
+        if (ch === '\n') {
+            out += '\\n';
+            continue;
+        }
+        if (ch === '\r') {
+            out += '\\r';
+            continue;
+        }
+        if (ch === '\t') {
+            out += '\\t';
+            continue;
+        }
+        const code = ch.charCodeAt(0);
+        if (code < 0x20) {
+            out += '\\u' + code.toString(16).padStart(4, '0');
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+/**
+ * Re-escapează ghilimelele din interiorul valorilor string (modelele le emit
+ * des neescapate: `"content": "{"a": 1}"`). O ghilimele închide string-ul doar
+ * dacă urmează `:` / `,` / `}` / `]` sau sfârșitul textului.
+ */
+function repairUnescapedQuotes(json) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < json.length; i++) {
+        const ch = json[i];
+        if (escaped) {
+            out += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            out += ch;
+            escaped = true;
+            continue;
+        }
+        if (ch !== '"') {
+            out += ch;
+            continue;
+        }
+        if (!inString) {
+            inString = true;
+            out += ch;
+            continue;
+        }
+        const next = nextNonSpace(json, i + 1);
+        if (next === ':' ||
+            next === ',' ||
+            next === '}' ||
+            next === ']' ||
+            next === undefined) {
+            inString = false;
+            out += ch;
+        }
+        else {
+            out += '\\"';
+        }
+    }
+    return out;
+}
+/**
+ * v2.5.57/2.5.58 — repararea path-urilor Windows NESCAPATE din JSON.
+ *
+ * `JSON.parse` respinge `"z:\home\…"` cu „Bad escaped character" (Node nou) /
+ * „Invalid \escape" (Node vechi): tool call-ul părea malformat și modelul
+ * primea același retry de 3 ori (log 2026-10-08 16:37). În plus, `\b` / `\f` /
+ * `\n` / `\r` / `\t` sunt escape-uri VALIDE, deci un path ca `D:\test\build`
+ * „parsează" cu tab/backspace în loc de `\` + literă (bug critic: `bitwanderer`
+ * → `itwanderer`, fiecare comandă pe Z:\ eșua în buclă). De aceea reparația se
+ * face ÎNAINTE de JSON.parse, pentru fiecare string care E o cale Windows
+ * (literă de drive + `:\`/`:/`, sau început UNC), fără newline-uri reale în el:
+ * facem PARI toate secvențele de backslash — `\h` → `\\h`, `\t` → `\\t`,
+ * `\b` → `\\b` — iar perechile deja corecte (`\\`) rămân neatinse.
+ * Ex.: `"z:\home\bitwanderer"` → `"z:\\home\\bitwanderer"`.
+ */
+/** `raw` = conținutul brut (încă neparsat) al unui string JSON. */
+function looksLikeWindowsPath(raw) {
+    if (raw.includes('\n') || raw.includes('\r'))
+        return false;
+    return /^[A-Za-z]:[\\/]/.test(raw) || /^\\\\/.test(raw);
+}
+/** Face pară (even) fiecare secvență de `\` — `\h` → `\\h`, `\\` neschimbat. */
+function evenBackslashRuns(text) {
+    return text.replace(/\\+/g, (run) => run.length % 2 === 1 ? run + '\\' : run);
+}
+/**
+ * v2.5.59 — același tratament pentru COMENZI: face pară doar secvențele impare
+ * de `\` urmate de o LITERĂ (`\h`, `\b`, `\t`, `\w`, …), ca separatoarele de
+ * path din comandă să rămână literale. `\"` / `\/` / `\\` rămân neatinse —
+ * ghilimelele escape-uite din comenzi (`dir "z:\home\…"`) nu trebuie stricate.
+ */
+function doubleLetterBackslashRuns(text) {
+    return text.replace(/(\\+)([A-Za-z])/g, (match, run, ch) => run.length % 2 === 1 ? run + '\\' + ch : match);
+}
+/** Cheia imediat dinaintea string-ului curent este `command`? */
+const COMMAND_KEY_RE = /"command"\s*:\s*$/;
+/**
+ * v2.5.57/2.5.58/2.5.59 — reparații string-aware de backslash-uri, ÎNAINTE de
+ * JSON.parse: string-urile care SUNT căi Windows (drive / UNC) și valorile
+ * cheii `command` (comenzile conțin path-uri în interiorul lor) primesc
+ * backslash-uri pare; restul textului rămâne neatins.
+ */
+function repairJsonEscapes(json) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    let raw = '';
+    let isCommandValue = false;
+    let commandRepaired = false;
+    let pathRepaired = false;
+    for (let i = 0; i < json.length; i++) {
+        const ch = json[i];
+        if (!inString) {
+            if (ch === '"') {
+                // verificăm `out` ÎNAINTE de a adăuga ghilimeaua de deschidere —
+                // altfel textul se termină cu `:"` și `/"command"\s*:$/` nu se potrivește
+                isCommandValue = COMMAND_KEY_RE.test(out.slice(-64));
+                inString = true;
+                raw = '';
+            }
+            out += ch;
+            continue;
+        }
+        if (escaped) {
+            raw += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            raw += ch;
+            escaped = true;
+            continue;
+        }
+        if (ch === '"') {
+            inString = false;
+            if (isCommandValue) {
+                const fixed = doubleLetterBackslashRuns(raw);
+                if (fixed !== raw) {
+                    commandRepaired = true;
+                    raw = fixed;
+                }
+            }
+            else if (looksLikeWindowsPath(raw)) {
+                const fixed = evenBackslashRuns(raw);
+                if (fixed !== raw) {
+                    pathRepaired = true;
+                    raw = fixed;
+                }
+            }
+            out += raw;
+            out += ch;
+            continue;
+        }
+        raw += ch;
+    }
+    if (inString)
+        out += raw; // string neîncheiat (JSON trunchiat) — rămâne așa
+    return { text: out, commandRepaired, pathRepaired };
+}
+/**
+ * v2.5.57/2.5.58 — escape-urile INVALIDE din orice string (`\d`, `\w`, …): face
+ * pară secvența de backslash de dinaintea unui caracter care nu poate fi escape
+ * (`"` `\` `/` `b` `f` `n` `r` `t` `u`). Run-aware: `\\h` (pereche corectă
+ * urmată de literă) rămâne neatinsă. Plasă de siguranță pentru string-urile
+ * care nu sunt căi Windows (ex: pattern-uri regex `\d+`).
+ */
+function repairInvalidEscapes(json) {
+    return json.replace(/(\\+)([^"\\\/bfnrtu])/g, (match, run, ch) => run.length % 2 === 1 ? run + '\\' + ch : match);
+}
+/** JSON.parse pe obiect (nu array) — `null` la orice eroare. */
+function parseObjectOrNull(text) {
+    try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed
+            : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Log-ul reparației de escape-uri (mesajul depinde de ce s-a reparat). */
+function logEscapeRepair(repair) {
+    queueParserLog(repair.commandRepaired
+        ? 'auto-repaired Windows path in command'
+        : 'auto-repaired Windows path (backslash-letter)', false);
+}
+/**
+ * O singură încercare de parsare.
+ *
+ * v2.5.58/2.5.59: reparația de path-uri Windows (și de comenzi) se aplică
+ * ÎNAINTE de JSON.parse — altfel un path cu escape-uri VALIDE (`\b`, `\f`,
+ * `\n`, `\r`, `\t`) parsează „cu succes" cu tab/backspace în loc de `\` +
+ * literă (ex: `bitwanderer` → `itwanderer`) și niciun retry nu-l mai repară.
+ * Dacă varianta reparată parsează, o preferăm și logăm; altfel încercăm
+ * textul original, apoi escape-urile invalide rămase (string-urile ne-path).
+ * Log-urile parserului ajung la `[chat]` (FIX 5 v2.5.56).
+ */
+function parseJsonAttempt(attempt) {
+    const repair = repairJsonEscapes(attempt);
+    if (repair.text !== attempt) {
+        const reparsed = parseObjectOrNull(repair.text);
+        if (reparsed) {
+            logEscapeRepair(repair);
+            return reparsed;
+        }
+        const escapesFixed = repairInvalidEscapes(repair.text);
+        if (escapesFixed !== repair.text) {
+            const reparsed2 = parseObjectOrNull(escapesFixed);
+            if (reparsed2) {
+                logEscapeRepair(repair);
+                return reparsed2;
+            }
+        }
+    }
+    const parsed = parseObjectOrNull(attempt);
+    if (parsed)
+        return parsed;
+    const escapeFixed = repairInvalidEscapes(attempt);
+    if (escapeFixed !== attempt) {
+        const reparsed = parseObjectOrNull(escapeFixed);
+        if (reparsed) {
+            queueParserLog('auto-repaired invalid escape in JSON', false);
+            return reparsed;
+        }
+    }
+    return null;
+}
+/** Obiectul JSON parsat din `raw`, cu reparații tolerante succesive. */
+function tryParseJsonObject(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('{'))
+        return null;
+    const controlFixed = repairControlChars(trimmed);
+    const attempts = [
+        trimmed,
+        controlFixed,
+        repairUnescapedQuotes(trimmed),
+        repairUnescapedQuotes(controlFixed)
+    ];
+    for (const attempt of attempts) {
+        const parsed = parseJsonAttempt(attempt);
+        if (parsed)
+            return parsed;
+    }
+    return null;
+}
+/** Candidatele de JSON tool call, în ordinea priorității, fără duplicate. */
+function collectCandidates(text) {
+    const out = [];
+    const seen = new Set();
+    const push = (value) => {
+        const trimmed = value.trim();
+        if (!trimmed || seen.has(trimmed))
+            return;
+        seen.add(trimmed);
+        out.push(trimmed);
+    };
+    for (const body of fencedBodies(text))
+        push(body);
+    const spans = scanObjects(text);
+    const startsWithToolKey = (span) => TOOL_MARKER_HEAD_RE.test(text.slice(span.start, span.start + TOOL_HEAD_WINDOW));
+    for (const span of spans) {
+        if (startsWithToolKey(span))
+            push(text.slice(span.start, span.end + 1));
+    }
+    // fallback: ultimul obiect echilibrat din text (apoi, descrescător, restul)
+    for (let i = spans.length - 1; i >= 0; i--) {
+        push(text.slice(spans[i].start, spans[i].end + 1));
+    }
+    push(stripLeadingFence(text));
+    return out;
+}
+/**
+ * v2.5.28 (bug #65): `write_files` trimis cu array-ul direct ca `args`
+ * (`{"action":"write_files","args":[{"path":"...","content":"..."}]}`) — o
+ * formă pe care modelul o produce natural, dar care era respinsă cu „args.files
+ * is missing". O normalizăm la `{ files: [...] }`; restul uneltelor rămân
+ * neatinse.
+ */
+function normalizeWriteFilesArgs(tool, args) {
+    if (tool === 'write_files' && Array.isArray(args))
+        return { files: args };
+    return args;
+}
+/** Normalizează obiectul parsat la {tool, args} (inclusiv forma legacy „action"). */
+function normalizeToolCall(parsed) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return null;
+    }
+    if (typeof parsed.tool === 'string') {
+        if (parsed.args && typeof parsed.args === 'object') {
+            return {
+                tool: parsed.tool,
+                args: normalizeWriteFilesArgs(parsed.tool, parsed.args)
+            };
+        }
+        if (typeof parsed.action === 'string') {
+            const { tool, action, ...rest } = parsed;
+            const name = `${tool}_${action}`;
+            return { tool: name, args: normalizeWriteFilesArgs(name, rest) };
+        }
+        // v2.5.39 (bug #90): args-urile pot veni „pe verticală" — cheile de args stau
+        // direct lângă „tool": `{"tool":"run_command","command":"rm x"}` sau
+        // `{"tool":"write_files","files":[…]}` (înainte args ieșea gol ⇒ respins).
+        const { tool, ...rest } = parsed;
+        return { tool, args: normalizeWriteFilesArgs(tool, rest) };
+    }
+    // v2.5.26 (bug #51): promptul vorbește de „actions", deci modelele trimit
+    // {"action":"read_file","args":{...}} — aceeași formă, doar cheia diferă.
+    if (typeof parsed.action === 'string') {
+        const { action, args, ...rest } = parsed;
+        if (args && typeof args === 'object' && !Array.isArray(args)) {
+            return { tool: action, args };
+        }
+        // v2.5.28 (bug #65): args ca array direct (write_files) → args.files
+        if (Array.isArray(args)) {
+            return { tool: action, args: normalizeWriteFilesArgs(action, args) };
+        }
+        return { tool: action, args: rest };
+    }
+    return null;
+}
+/* =========================================================================
+ * v2.4.9 — Format marker-based pentru uneltele cu conținut liber
+ * `{"tool":"write_file","args":{"content":"... ghilimele neescapeate ..."}}`
+ * e JSON AMBIGUU: nu se poate ști unde se termină string-ul `content`, deci
+ * niciun parser nu-l poate repara. Pentru write_file / edit_file / write_files
+ * modelul scrie conținutul RAW, între markeri pe linii separate:
+ *
+ *   TOOL: write_file
+ *   PATH: package.json
+ *   CONTENT:
+ *   { "name": "builderweb-app" }
+ *   END_CONTENT
+ *
+ * Marker-based e OPȚIONAL și PRIORITAR: dacă blocul nu e valid (marker de
+ * închidere lipsă, PATH lipsă, alt tool) cădem înapoi pe parserul JSON.
+ * v2.5.26 (bug #51): prefixul poate fi `TOOL:` (vechi) sau `ACTION:` (nou).
+ * ========================================================================= */
+/** `TOOL: nume` / `ACTION: nume` singur pe linie (case-insensitive, whitespace ignorat). */
+const MARKER_TOOL_LINE_RE = new RegExp('^[ \\t]*' + MARKER_PREFIX + '[ \\t]*:[ \\t]*([A-Za-z_][A-Za-z0-9_]*)[ \\t]*$', 'i');
+/** Uneltele cu conținut liber care acceptă formatul marker-based. */
+const MARKER_TOOLS = new Set(['write_file', 'edit_file', 'write_files']);
+/**
+ * v2.5.42 (bug #98): unelte marker FĂRĂ conținut — doar `PATH` (și, pentru
+ * folder, `RECURSIVE:`). Un model care a învățat `ACTION: write_file` + `PATH:`
+ * scrie firesc și `ACTION: delete_file` + `PATH:`, iar fără suportul de aici
+ * apelul perfect valid ajungea la auto-retry-ul de „malformed" (exact
+ * ineficiența din bug #98).
+ */
+const MARKER_PATH_ONLY_TOOLS = new Set(['delete_file', 'delete_directory']);
+/** Separatorul opțional dintre fișiere în formatul lui write_files. */
+const MARKER_FILE_SEPARATOR_RE = /^[ \t]*-{3,}[ \t]*FILE[ \t]*-{3,}[ \t]*$/i;
+/** Prima linie `NAME: ...` de la `from` înainte (oprit de `stop`, dacă e dat). */
+function findMarker(lines, name, from, stop) {
+    const re = new RegExp('^[ \\t]*' + name + '[ \\t]*:(.*)$', 'i');
+    for (let i = Math.max(0, from); i < lines.length; i++) {
+        if (stop && stop.test(lines[i]))
+            return null;
+        const m = re.exec(lines[i]);
+        if (m)
+            return { index: i, rest: m[1] };
+    }
+    return null;
+}
+/** Indexul liniei `END_NAME` (acceptă și `END_NAME:`), sau -1. */
+function findMarkerEnd(lines, name, from, stop) {
+    const re = new RegExp('^[ \\t]*' + name + '[ \\t]*:?[ \\t]*$', 'i');
+    for (let i = Math.max(0, from); i < lines.length; i++) {
+        if (stop && stop.test(lines[i]))
+            return -1;
+        if (re.test(lines[i]))
+            return i;
+    }
+    return -1;
+}
+/**
+ * v2.5.1 — FIX B1: conținutul e scris de model într-un code fence markdown
+ * (cerut în prompt, ca #, *, _ să supraviețuiască randării din chatul web).
+ * Când textul e integral înconjurat de un fence (```…``` sau mai lung),
+ * gardurile se scot; fence-urile interioare rămân neatinse. Dacă randarea
+ * markdown a consumat deja fence-urile (calea normală în browser), textul
+ * rămâne neschimbat.
+ */
+function stripWrappingFence(text) {
+    const lines = text.split('\n');
+    let first = 0;
+    while (first < lines.length && !lines[first].trim())
+        first++;
+    let last = lines.length - 1;
+    while (last > first && !lines[last].trim())
+        last--;
+    if (first >= last)
+        return text;
+    const open = /^[ \t]*(`{3,})[ \t]*[A-Za-z0-9_.+-]*[ \t]*$/.exec(lines[first]);
+    const close = /^[ \t]*(`{3,})[ \t]*$/.exec(lines[last]);
+    if (!open || !close || close[1].length < open[1].length)
+        return text;
+    return lines.slice(first + 1, last).join('\n');
+}
+/**
+ * v2.5.3 FIX 7: unii provideri (DeepSeek) strivesc conținutul pe o singură
+ * linie. Normalizăm DOAR când nu există niciun newline real:
+ *  - `\n` / `\r\n` literal (backslash+n) → newline real;
+ *  - conținut cu tag-uri HTML de închidere, tot pe o linie → introducem (brute
+ *    force) un newline după fiecare tag de închidere.
+ * Textul care are deja newline-uri reale rămâne neatins (nu stricăm un
+ * „a\\nb" dintr-un string de cod) — normalizăm doar când nu există niciun
+ * newline real.
+ */
+function normalizeContentNewlines(text) {
+    if (!text || text.includes('\n'))
+        return text;
+    if (/\\r\\n|\\n/.test(text)) {
+        return text.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+    }
+    if (/<\/[a-zA-Z][\w:-]*\s*>/.test(text)) {
+        return text.replace(/(<\/[a-zA-Z][\w:-]*\s*>)/g, '$1\n').replace(/\n+$/, '');
+    }
+    return text;
+}
+/**
+ * v2.5.4 FIX 8 / v2.5.5 FIX 8b: UI-ul din chatul web (DeepSeek) adaugă artefacte
+ * la începutul conținutului extras dintr-un code block: eticheta limbajului,
+ * „Copy”, „Download” (uneori „Copy code”). Le eliminăm ca fișierul scris să nu fie
+ * corupt; doar începutul blocului e curățat (regexele nu au flag `m`).
+ * v2.5.5: antetul era ratat când înaintea lui existau newline-uri/spații (bloc de
+ * cod cu primul rând gol) — curățăm și leading whitespace/BOM, apoi repetăm
+ * pașii, ca antetele combinate să fie eliminate toate.
+ */
+function stripUiArtifacts(text) {
+    const patterns = [
+        /^(?:astro|javascript|typescript|python|css|html|json|bash|shell|text|plaintext|markdown|md|yaml|xml|sql|java|cpp|c|go|rust|php|ruby|js|ts|jsx|tsx|sh)\s*[\r\n]+\s*Copy\s*[\r\n]+\s*Download\s*[\r\n]+/i,
+        /^Copy\s*[\r\n]+\s*Download\s*[\r\n]+/i,
+        /^Copy code\s*[\r\n]+/i,
+        /^Download\s*[\r\n]+/i,
+    ];
+    let result = text;
+    let changed = true;
+    let iter = 0;
+    while (changed && iter < 5) {
+        changed = false;
+        iter++;
+        for (const pattern of patterns) {
+            // Leading whitespace/newlines/BOM se ignoră la căutarea antetului, dar
+            // indentația reală a primului rând rămâne intactă dacă nu urmează artefact.
+            const lead = /^[\s\uFEFF\u200B]+/.exec(result)?.[0] ?? '';
+            const body = lead ? result.slice(lead.length) : result;
+            if (lead && !pattern.test(body))
+                continue;
+            const next = body.replace(pattern, '');
+            if (next !== result) {
+                result = next;
+                changed = true;
+            }
+        }
+    }
+    return result;
+}
+/**
+ * Conținutul RAW dintre linia markerului și linia lui `END_...`. Newline-ul
+ * de dinaintea terminatorului nu face parte din conținut (un rând gol în plus
+ * înainte de `END_...` rămâne, însă, păstrat).
+ */
+function readMarkerBlock(lines, start, endName, stop) {
+    const end = findMarkerEnd(lines, endName, start.index + 1, stop);
+    if (end < 0)
+        return null;
+    const body = lines.slice(start.index + 1, end);
+    // `CONTENT: valoare` (fără rând nou) e acceptat: primul rând e restul liniei.
+    const inline = start.rest.trim() ? [start.rest.replace(/^[ \t]/, '')] : [];
+    const text = inline.concat(body).join('\n');
+    return {
+        text: stripUiArtifacts(normalizeContentNewlines(stripWrappingFence(text))),
+        next: end + 1,
+    };
+}
+function parseWriteFileMarkers(lines, from) {
+    const path = findMarker(lines, 'PATH', from);
+    if (!path)
+        return null;
+    const content = findMarker(lines, 'CONTENT', path.index + 1);
+    if (!content)
+        return null;
+    const block = readMarkerBlock(lines, content, 'END_CONTENT');
+    if (!block)
+        return null;
+    const filePath = path.rest.trim();
+    if (!filePath)
+        return null;
+    return { tool: 'write_file', args: { path: filePath, content: block.text } };
+}
+function parseEditFileMarkers(lines, from) {
+    const path = findMarker(lines, 'PATH', from);
+    if (!path)
+        return null;
+    const oldStart = findMarker(lines, 'OLD_TEXT', path.index + 1);
+    if (!oldStart)
+        return null;
+    const oldBlock = readMarkerBlock(lines, oldStart, 'END_OLD_TEXT');
+    if (!oldBlock)
+        return null;
+    const newStart = findMarker(lines, 'NEW_TEXT', oldBlock.next);
+    if (!newStart)
+        return null;
+    const newBlock = readMarkerBlock(lines, newStart, 'END_NEW_TEXT');
+    if (!newBlock)
+        return null;
+    const filePath = path.rest.trim();
+    if (!filePath)
+        return null;
+    return {
+        tool: 'edit_file',
+        args: {
+            path: filePath,
+            old_text: oldBlock.text,
+            new_text: newBlock.text
+        }
+    };
+}
+/**
+ * v2.5.42 (bug #98): `ACTION: delete_file` / `delete_directory` + `PATH:`
+ * (și `RECURSIVE: true` pentru folder). Căutarea lui PATH se oprește la
+ * următorul marker de unealtă, ca un PATH îndepărtat să nu fie confundat.
+ */
+function parsePathOnlyMarkers(lines, from, tool) {
+    const path = findMarker(lines, 'PATH', from, MARKER_TOOL_LINE_RE);
+    if (!path)
+        return null;
+    const filePath = path.rest.trim();
+    if (!filePath)
+        return null;
+    if (tool === 'delete_directory') {
+        const rec = findMarker(lines, 'RECURSIVE', path.index + 1, MARKER_TOOL_LINE_RE);
+        const recursive = !!rec && /^(true|yes|1)$/i.test(rec.rest.trim());
+        return { tool, args: { path: filePath, recursive } };
+    }
+    return { tool, args: { path: filePath } };
+}
+function parseWriteFilesMarkers(lines, from) {
+    const files = [];
+    let cursor = from;
+    while (cursor < lines.length) {
+        // sărim peste separatoarele `---FILE---` și liniile goale dintre fișiere
+        while (cursor < lines.length &&
+            (MARKER_FILE_SEPARATOR_RE.test(lines[cursor]) || !lines[cursor].trim())) {
+            cursor++;
+        }
+        const path = findMarker(lines, 'PATH', cursor, MARKER_FILE_SEPARATOR_RE);
+        if (!path)
+            break;
+        const content = findMarker(lines, 'CONTENT', path.index + 1, MARKER_FILE_SEPARATOR_RE);
+        if (!content)
+            break;
+        const block = readMarkerBlock(lines, content, 'END_CONTENT', MARKER_FILE_SEPARATOR_RE);
+        if (!block)
+            break;
+        const filePath = path.rest.trim();
+        if (!filePath)
+            break;
+        files.push({ path: filePath, content: block.text });
+        cursor = block.next;
+    }
+    if (!files.length)
+        return null;
+    return { tool: 'write_files', args: { files } };
+}
+/**
+ * v2.5.27 (bug #63) FIX 2: căile-alias `.ts.txt` primite de la AI (eticheta pe
+ * care a văzut-o la citire) se traduc înapoi în căile reale (`.ts`) — astfel
+ * aprobarea, diff-ul, verificarea de trunchiere și scrierea pe disc lucrează
+ * pe fișierul ORIGINAL. Traducerile se loghează prin tsAlias (drenate de
+ * chatView, care are canalul Output).
+ */
+function withResolvedPaths(call) {
+    const { args, mappings } = (0, tsAlias_1.mapToolCallAliases)(call.tool, call.args);
+    if (!mappings.length || !args)
+        return call;
+    for (const m of mappings)
+        (0, tsAlias_1.queueAliasLog)(m);
+    return { tool: call.tool, args };
+}
+/**
+ * Extrage un tool call din formatul marker-based (conținut RAW, fără escape).
+ * Întoarce null pentru orice alt tool sau bloc incomplet → fallback pe JSON.
+ */
+function parseMarkerToolCall(text) {
+    const lines = String(text ?? '').split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        const m = MARKER_TOOL_LINE_RE.exec(lines[i]);
+        if (!m)
+            continue;
+        const tool = m[1].toLowerCase();
+        // v2.5.42 (bug #98): unelte marker fără conținut (delete_file/delete_directory)
+        if (MARKER_PATH_ONLY_TOOLS.has(tool)) {
+            const call = parsePathOnlyMarkers(lines, i + 1, tool);
+            return call ? withCommandTabsFixed(withResolvedPaths(call)) : null;
+        }
+        if (!MARKER_TOOLS.has(tool))
+            return null;
+        if (tool === 'write_file') {
+            const call = parseWriteFileMarkers(lines, i + 1);
+            return call ? withCommandTabsFixed(withResolvedPaths(call)) : null;
+        }
+        if (tool === 'edit_file') {
+            const call = parseEditFileMarkers(lines, i + 1);
+            return call ? withCommandTabsFixed(withResolvedPaths(call)) : null;
+        }
+        const call = parseWriteFilesMarkers(lines, i + 1);
+        return call ? withCommandTabsFixed(withResolvedPaths(call)) : null;
+    }
+    return null;
+}
+/** true când textul conține un `TOOL:` / `ACTION:` pentru o unealtă marker. */
+function looksLikeMarkerToolCallAttempt(text) {
+    return String(text ?? '')
+        .split(/\r?\n/)
+        .some((line) => {
+        const m = MARKER_TOOL_LINE_RE.exec(line);
+        if (!m)
+            return false;
+        const tool = m[1].toLowerCase();
+        return MARKER_TOOLS.has(tool) || MARKER_PATH_ONLY_TOOLS.has(tool);
+    });
+}
+/* =========================================================================
+ * v2.5.39 FIX (bug #90) — recuperarea tool call-urilor „malformed"
+ * În testul v2.5.37 (Gemini) pașii 1–8 au mers, dar la pasul 9 modelul a
+ * trimis `TOOL: run_command` urmat de JSON-ul pe linia următoare:
+ *
+ *     TOOL: run_command
+ *     {"command": "rm bootcamp-test2/test.ts"}
+ *
+ * Markerul era recunoscut doar pentru uneltele cu conținut liber (write_file /
+ * edit_file / write_files), iar JSON-ul fără cheia „tool" era respins ⇒ apelul
+ * PERFECT VALID ajungea la auto-retry, modelul renunța, iar cleanup-ul nu se
+ * mai făcea (raport final fals „10/10"). Aici, DUPĂ ce formatul exact a
+ * eșuat, căutăm tolerant în tot răspunsul:
+ *   1. un marker `TOOL:` / `ACTION: <nume>` urmat de un obiect JSON (pe linia
+ *      următoare, în fence ```json sau lipit de nume);
+ *   2. obiectul JSON respectiv poate avea el însuși forma `{"tool"/"action":
+ *      …, "args": {…}}` sau cheile de args direct (`{"command": "…"}`);
+ * textul dinaintea / de după JSON e ignorat, indentarea nu contează.
+ * Dacă nici așa nu iese un apel valid ⇒ comportamentul de dinainte (auto-retry
+ * + MALFORMED_TOOL_CALL_ERROR).
+ * ========================================================================= */
+/** Câte caractere după marker căutăm JSON-ul (payload-ul e oricum mic). */
+const RECOVERY_JSON_WINDOW = 4000;
+/**
+ * `TOOL: nume` / `ACTION: nume` — tolerant la text după nume pe aceeași linie
+ * (`TOOL: run_command {"command": "…"}`), spre deosebire de
+ * MARKER_TOOL_LINE_RE, care cere linia să se termine după nume.
+ */
+const MARKER_TOOL_HEAD_RE = new RegExp('^[ \\t]*' + MARKER_PREFIX + '[ \\t]*:[ \\t]*([A-Za-z_][A-Za-z0-9_]*)\\b', 'im');
+/** Args obligatorii ale uneltelor cu conținut liber (vezi MARKER_TOOLS). */
+const RECOVERY_REQUIRED_ARGS = {
+    write_file: ['path', 'content'],
+    edit_file: ['path', 'old_text', 'new_text'],
+    write_files: ['files']
+};
+/** Primul obiect JSON echilibrat din text, parsat tolerant (sau null). */
+function firstJsonObject(text) {
+    const spans = scanObjects(text);
+    if (!spans.length)
+        return null;
+    let first = spans[0];
+    for (const span of spans) {
+        if (span.start < first.start)
+            first = span;
+    }
+    return tryParseJsonObject(text.slice(first.start, first.end + 1));
+}
+/** Args-urile dintr-un payload JSON: `{"args": {…}}` sau cheile directe. */
+function payloadArgs(parsed) {
+    const args = parsed?.args;
+    if (args && typeof args === 'object' && !Array.isArray(args))
+        return args;
+    if (Array.isArray(args))
+        return args; // write_files trimis ca array (bug #65)
+    const { tool, action, ...rest } = parsed ?? {};
+    return rest;
+}
+/** true când uneltele cu conținut liber au TOATE args-urile obligatorii. */
+function hasRequiredArgs(tool, args) {
+    const required = RECOVERY_REQUIRED_ARGS[tool];
+    if (!required)
+        return true;
+    if (!args || typeof args !== 'object')
+        return false;
+    return required.every((key) => args[key] !== undefined);
+}
+/**
+ * Recuperează apelul din forma `TOOL: <nume>` + JSON. Întoarce null când nu
+ * există un JSON valid după marker sau când lipsesc args-urile obligatorii
+ * (atunci răspunsul rămâne tratat ca malformed, ca înainte).
+ */
+function recoverToolCallFromMarker(text) {
+    const m = MARKER_TOOL_HEAD_RE.exec(text);
+    if (!m)
+        return null;
+    const name = m[1].toLowerCase();
+    const after = text.slice(m.index + m[0].length, m.index + m[0].length + RECOVERY_JSON_WINDOW);
+    const parsed = firstJsonObject(after);
+    if (!parsed)
+        return null;
+    // JSON-ul poate conține el însuși apelul (`TOOL: x` + `{"tool":"y", …}`)
+    const inner = normalizeToolCall(parsed);
+    if (inner)
+        return hasRequiredArgs(inner.tool, inner.args) ? inner : null;
+    const args = normalizeWriteFilesArgs(name, payloadArgs(parsed));
+    if (!hasRequiredArgs(name, args))
+        return null;
+    return { tool: name, args };
+}
+/**
+ * true când textul are un marker `TOOL: <nume>` urmat de începutul unui JSON
+ * (chiar dacă acel JSON e trunchiat și nu poate fi recuperat) — tot o
+ * ÎNCERCARE de tool call, deci merită auto-retry-ul de „malformed".
+ */
+function looksLikeMarkerPayloadAttempt(text) {
+    const m = MARKER_TOOL_HEAD_RE.exec(text);
+    if (!m)
+        return false;
+    return text.slice(m.index + m[0].length).includes('{');
+}
+/**
+ * Extrage tool call-ul din răspunsul modelului, oricât de mult text l-ar
+ * înconjura (proză, fence markdown, JSON nested în `content`).
+ * v2.4.9: întâi formatul marker-based (conținut RAW, fără escape), apoi JSON.
+ * v2.5.39 (bug #90): dacă ambele eșuează, încercăm recuperarea tolerantă
+ * (`TOOL: <nume>` + JSON oriunde în răspuns) înainte de a declara malformed.
+ */
+function parseToolCallText(text) {
+    const src = String(text ?? '');
+    if (!src.trim())
+        return null;
+    const markerCall = parseMarkerToolCall(src);
+    if (markerCall)
+        return markerCall;
+    for (const candidate of collectCandidates(src)) {
+        const parsed = tryParseJsonObject(candidate);
+        if (!parsed)
+            continue;
+        const call = normalizeToolCall(parsed);
+        if (call)
+            return withCommandTabsFixed(withResolvedPaths(call));
+    }
+    const recovered = recoverToolCallFromMarker(src);
+    if (recovered) {
+        queueParserLog('[parser] recovered tool call from malformed input: ' + recovered.tool, false);
+        return withCommandTabsFixed(withResolvedPaths(recovered));
+    }
+    return null;
+}
+/**
+ * true când răspunsul e clar o ÎNCERCARE de tool call (începe cu `{"tool":` /
+ * `{"action":`, eventual în fence markdown — sau conține un bloc marker-based
+ * `TOOL:` / `ACTION:`) care nu a putut fi parsat — merită un mesaj de eroare
+ * clar, nu afișarea JSON-ului brut ca răspuns final.
+ * v2.5.39 (bug #90): și `TOOL: <nume necunoscut>` + JSON e tot o încercare.
+ */
+function looksLikeToolCallAttempt(text) {
+    const src = String(text ?? '');
+    const head = stripLeadingFence(src);
+    return (TOOL_MARKER_HEAD_RE.test(head) ||
+        ACTION_MARKER_HEAD_RE.test(head) ||
+        looksLikeMarkerToolCallAttempt(src) ||
+        looksLikeMarkerPayloadAttempt(src));
+}
+//# sourceMappingURL=toolCallParser.js.map

@@ -1,0 +1,367 @@
+{
+    "version": "1.5.4",
+    "updated": "2026-10-07",
+    "changelog": "v1.5.4: refreshed bundled Qwen and Mistral selectors for current composer, assistant response, and new-chat elements.",
+    "providers": {
+        "deepseek": {
+            "url": "https://chat.deepseek.com/",
+            "input": {
+                "primary": "textarea",
+                "alternatives": [
+                    "[contenteditable='true']",
+                    "div[role='textbox']",
+                    "textarea[placeholder]"
+                ],
+                "fingerprint": {
+                    "tags": ["textarea", "div"],
+                    "attributes": ["placeholder", "contenteditable", "role"],
+                    "nearbyText": ["Message", "Send", "Type", "Scrie"],
+                    "position": "bottom",
+                    "editable": true
+                }
+            },
+            "response": {
+                "primary": ".ds-assistant-message-main-content",
+                "alternatives": [
+                    "[class*='assistant-message']",
+                    "[data-role='assistant']",
+                    "[class*='markdown']"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "article"],
+                    "hasChildren": ["p", "ol", "ul", "pre", "code"],
+                    "role": "assistant",
+                    "position": "bottom",
+                    "minTextLength": 20
+                }
+            },
+            "newChat": {
+                "primary": "button[aria-label*='New chat' i]",
+                "alternatives": [
+                    "button[aria-label*='chat nou' i]",
+                    "[class*='new-chat']",
+                    "[data-testid*='new-chat']",
+                    "a[href='/']"
+                ],
+                "fingerprint": {
+                    "tags": ["button", "a"],
+                    "nearbyText": ["New chat", "Chat nou", "Conversation"],
+                    "position": "top"
+                }
+            },
+            "stopButton": {
+                "primary": "[aria-label*='Stop' i]",
+                "alternatives": [
+                    "button[class*='stop']",
+                    "[aria-label*='stop' i]",
+                    "[data-testid*='stop']"
+                ],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop", "Generating"],
+                    "position": "bottom"
+                }
+            }
+        },
+        "gemini": {
+            "url": "https://gemini.google.com/app",
+            "input": {
+                "primary": "rich-textarea .ql-editor[contenteditable='true']",
+                "alternatives": [
+                    "div.ql-editor[contenteditable='true'][role='textbox']",
+                    "[role='textbox'][contenteditable='true']",
+                    "[aria-label='Enter a prompt for Gemini']",
+                    "rich-textarea div[contenteditable='true']",
+                    "div[contenteditable='true']"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "textarea"],
+                    "attributes": ["contenteditable", "role"],
+                    "nearbyText": ["Ask Gemini", "Message", "Întreabă"],
+                    "position": "bottom",
+                    "editable": true
+                }
+            },
+            "response": {
+                "primary": "model-response .markdown",
+                "alternatives": [
+                    "model-response message-content",
+                    "message-content",
+                    ".model-response-text",
+                    ".markdown"
+                ],
+                "fingerprint": {
+                    "tags": ["message-content", "div", "article"],
+                    "hasChildren": ["p", "ol", "ul", "pre", "code"],
+                    "role": "assistant",
+                    "position": "bottom",
+                    "minTextLength": 20
+                }
+            },
+            "newChat": {
+                "primary": "[data-test-id='new-chat-button']",
+                "alternatives": [
+                    "gem-nav-list-item[data-test-id='new-chat-button']",
+                    "a[data-test-id='side-nav-sparkle-button'][aria-label*='New chat' i]",
+                    "a[aria-label*='New chat' i]",
+                    "a[href='/app']"
+                ],
+                "fingerprint": {
+                    "tags": ["button", "a"],
+                    "nearbyText": ["New chat", "Chat nou"],
+                    "position": "top"
+                }
+            },
+            "stopButton": {
+                "primary": "button[aria-label*='Stop' i]",
+                "alternatives": [
+                    "button[aria-label*='Oprește' i]",
+                    "[data-test-id*='stop']",
+                    "[data-testid*='stop']"
+                ],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop", "Stop response", "Oprește"],
+                    "position": "bottom"
+                }
+            }
+        },
+        "claude": {
+            "url": "https://claude.ai/new",
+            "input": {
+                "primary": "div.ProseMirror[contenteditable='true']",
+                "alternatives": [
+                    "fieldset div[contenteditable='true']",
+                    "div[contenteditable='true']",
+                    "textarea"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "textarea"],
+                    "attributes": ["contenteditable", "role"],
+                    "nearbyText": ["How can I help", "Write a message", "Message"],
+                    "position": "bottom",
+                    "editable": true
+                }
+            },
+            "response": {
+                "primary": "div[data-testid='assistant-message']",
+                "alternatives": [
+                    "div.font-claude-message",
+                    "div[data-testid='assistant-message'] > div:last-child"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "article"],
+                    "hasChildren": ["p", "ol", "ul", "pre", "code"],
+                    "role": "assistant",
+                    "position": "bottom",
+                    "minTextLength": 20
+                }
+            },
+            "newChat": {
+                "primary": "a[href='/new']",
+                "alternatives": [
+                    "nav a[href='/new']",
+                    "aside a[href='/new']",
+                    "[data-testid='new-chat-button']",
+                    "button:has(svg[aria-label='New chat'])",
+                    "button[aria-label*='new chat' i]",
+                    "button[aria-label*='chat nou' i]"
+                ],
+                "fingerprint": {
+                    "tags": ["button", "a"],
+                    "nearbyText": ["New chat", "Chat nou"],
+                    "position": "top"
+                }
+            },
+            "stopButton": {
+                "primary": "button[aria-label*='Stop' i]",
+                "alternatives": [
+                    "button[aria-label*='Stop response' i]",
+                    "[data-testid*='stop']"
+                ],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop", "Stop response"],
+                    "position": "bottom"
+                }
+            }
+        },
+        "chatgpt": {
+            "url": "https://chatgpt.com/",
+            "input": {
+                "primary": "#prompt-textarea",
+                "alternatives": [
+                    "div[contenteditable='true']",
+                    "textarea"
+                ],
+                "fingerprint": {
+                    "tags": ["textarea", "div"],
+                    "attributes": ["contenteditable", "placeholder", "role"],
+                    "nearbyText": ["Message", "Ask anything", "Type"],
+                    "position": "bottom",
+                    "editable": true
+                }
+            },
+            "response": {
+                "primary": "[data-message-author-role='assistant']",
+                "alternatives": [
+                    "[data-message-author-role='assistant'] .markdown",
+                    "[data-testid^='conversation-turn'] .markdown",
+                    ".markdown"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "article"],
+                    "attributes": ["data-message-author-role"],
+                    "hasChildren": ["p", "ol", "ul", "pre", "code"],
+                    "role": "assistant",
+                    "position": "bottom",
+                    "minTextLength": 20
+                }
+            },
+            "newChat": {
+                "primary": "a[data-testid='create-new-chat-button']",
+                "alternatives": [
+                    "button[data-testid='create-new-chat-button']",
+                    "a[aria-label*='New chat' i]",
+                    "button[aria-label*='New chat' i]",
+                    "a[href='/']"
+                ],
+                "fingerprint": {
+                    "tags": ["a", "button"],
+                    "nearbyText": ["New chat", "Chat nou"],
+                    "position": "top"
+                }
+            },
+            "stopButton": {
+                "primary": "button[data-testid='stop-button']",
+                "alternatives": [
+                    "button[aria-label*='Stop' i]",
+                    "[data-testid*='stop']"
+                ],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop", "Stop streaming"],
+                    "position": "bottom"
+                }
+            },
+            "loggedOut": {
+                "primary": "header button:text-is('Log in')",
+                "alternatives": [
+                    "aside button:text-is('Log in')",
+                    "header button:text-is('Sign up for free')",
+                    "aside button:text-is('Sign up for free')"
+                ]
+            }
+        },
+        "mistral": {
+            "url": "https://chat.mistral.ai/",
+            "input": {
+                "primary": "div.ProseMirror",
+                "alternatives": [
+                    "textarea[placeholder*='message' i]",
+                    "textarea",
+                    "div.ProseMirror[contenteditable='true']"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "textarea"],
+                    "attributes": ["contenteditable", "role", "placeholder"],
+                    "nearbyText": ["Send", "Message", "Ask"],
+                    "position": "bottom"
+                },
+                "preferredKeywords": ["message", "chat", "input", "prompt"]
+            },
+            "response": {
+                "primary": "[data-message-author-role=\"assistant\"]",
+                "alternatives": [
+                    "[class*='assistant-message']",
+                    "[data-message-author-role='assistant']",
+                    "div[class*='assistant']",
+                    "div.prose, [class*='markdown']",
+                    "[class*='message-content']"
+                ],
+                "fingerprint": {
+                    "tags": ["div", "article"],
+                    "hasChildren": ["p", "pre", "code", "ul", "ol"],
+                    "role": "assistant",
+                    "position": "bottom",
+                    "minTextLength": 20
+                },
+                "preferredKeywords": ["assistant", "message", "response", "markdown", "prose"]
+            },
+            "newChat": {
+                "primary": "a[href=\"/work/temporary-chat\"]",
+                "alternatives": [
+                    "[data-testid*='new-chat']",
+                    "button[class*='new-chat']",
+                    "button[aria-label*='new conversation' i]",
+                    "button[aria-label*='new' i]"
+                ],
+                "fingerprint": {
+                    "tags": ["button", "a"],
+                    "nearbyText": ["New chat", "Nouvelle", "Nouveau", "New conversation"],
+                    "position": "top"
+                }
+            },
+            "stopButton": {
+                "primary": "button[aria-label*='stop' i]",
+                "alternatives": [
+                    "[class*='stop']",
+                    "button[data-testid*='stop']"
+                ],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop", "Stop generating"]
+                }
+            }
+        },
+        "qwen": {
+            "url": "https://chat.qwen.ai/",
+            "input": {
+                "primary": "textarea.message-input-textarea",
+                "alternatives": [
+                    "textarea",
+                    "div[contenteditable='true'][role='textbox']"
+                ],
+                "fingerprint": {
+                    "tags": ["textarea", "div"],
+                    "attributes": ["placeholder", "contenteditable", "role"],
+                    "nearbyText": ["Ask", "Message", "Send"],
+                    "position": "bottom"
+                },
+                "preferredKeywords": ["message", "chat", "input"]
+            },
+            "response": {
+                "primary": "[data-message-author-role=\"assistant\"]",
+                "alternatives": [
+                    "div[class*='response']",
+                    "[data-role='assistant']"
+                ],
+                "fingerprint": {
+                    "tags": ["div"],
+                    "hasChildren": ["p", "pre", "code"],
+                    "role": "assistant"
+                },
+                "preferredKeywords": ["assistant", "message", "response", "markdown"]
+            },
+            "newChat": {
+                "primary": "div.sidebar-entry-fixed-list-content",
+                "alternatives": [
+                    "[class*='new-chat']",
+                    "button[class*='plus']"
+                ],
+                "fingerprint": {
+                    "tags": ["button", "a"],
+                    "nearbyText": ["New chat", "New", "Chat nou"]
+                }
+            },
+            "stopButton": {
+                "primary": "button[aria-label*='stop' i]",
+                "alternatives": ["[class*='stop']"],
+                "fingerprint": {
+                    "tags": ["button"],
+                    "nearbyText": ["Stop"]
+                }
+            }
+        }
+    }
+}

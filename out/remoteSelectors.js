@@ -1,0 +1,303 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AUTO_CHECK_INTERVAL_MS = exports.REMOTE_MAX_CHARS = void 0;
+exports.normalizeRemoteConfig = normalizeRemoteConfig;
+exports.parseRemoteConfig = parseRemoteConfig;
+exports.fetchRemoteSelectorsText = fetchRemoteSelectorsText;
+exports.shouldAutoCheck = shouldAutoCheck;
+exports.markAutoCheck = markAutoCheck;
+exports.checkAndApplyRemote = checkAndApplyRemote;
+const log_1 = require("./log");
+const selectors_1 = require("./selectors");
+const log = (msg) => (0, log_1.logLine)('remote', msg);
+/* =========================================================================
+ * v0.7.0 — REMOTE SELECTOR CONFIG (Gist GitHub public)
+ *
+ * Scop: reparațiile de selectori publicate de developer într-un Gist public
+ * ajung la TOȚI clienții fără update de extensie.
+ *
+ * Flux: freekit.selectorsUrl (URL raw Gist) -> fetch (10s timeout) ->
+ * validare + sanitizare strictă -> dacă version > versiunea activă =>
+ * selectors.ts îl aplică (merge cu configul activ) și îl salvează în
+ * cache-ul din globalState. ORICE eroare lasă configul activ neatins —
+ * fallback garantat la bundled.
+ *
+ * v0.7.1: verificarea automată de la pornire are rate limiting 24h
+ * (shouldAutoCheck / markAutoCheck) — cel mult un fetch pe zi; comanda
+ * manuală „Update Selectors" funcționează oricând, la cerere.
+ * ========================================================================= */
+exports.REMOTE_MAX_CHARS = 300_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_SELECTOR_LEN = 1000;
+const MAX_VERSION_LEN = 40;
+/** v0.7.1: verificarea automată de la pornire rulează cel mult o dată pe zi. */
+exports.AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTO_CHECK_STATE_KEY = 'freekit.selectorsAutoCheck';
+function str(v, max) {
+    if (typeof v !== 'string')
+        return undefined;
+    const s = v.trim();
+    if (!s || s.length > max)
+        return undefined;
+    return s;
+}
+function strList(v, maxItems = 40, maxLen = 200) {
+    if (!Array.isArray(v))
+        return undefined;
+    const out = [];
+    for (const item of v.slice(0, maxItems)) {
+        const s = str(item, maxLen);
+        if (s)
+            out.push(s);
+    }
+    return out.length ? out : undefined;
+}
+function normalizeFingerprint(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        return undefined;
+    const fp = {};
+    const tags = strList(raw.tags, 20, 60);
+    if (tags)
+        fp.tags = tags.map((t) => t.toLowerCase());
+    const attributes = strList(raw.attributes, 20, 60);
+    if (attributes)
+        fp.attributes = attributes;
+    const nearbyText = strList(raw.nearbyText, 30, 80);
+    if (nearbyText)
+        fp.nearbyText = nearbyText;
+    if (raw.position === 'top' || raw.position === 'bottom')
+        fp.position = raw.position;
+    const hasChildren = strList(raw.hasChildren, 20, 60);
+    if (hasChildren)
+        fp.hasChildren = hasChildren;
+    const role = str(raw.role, 60);
+    if (role)
+        fp.role = role;
+    if (typeof raw.editable === 'boolean')
+        fp.editable = raw.editable;
+    const minText = Number(raw.minTextLength);
+    if (Number.isFinite(minText) && minText >= 0 && minText <= 100_000) {
+        fp.minTextLength = Math.floor(minText);
+    }
+    return Object.keys(fp).length ? fp : undefined;
+}
+function normalizeSlot(raw, slot, pid, errors, optional = false) {
+    if (raw === undefined || raw === null) {
+        if (!optional)
+            errors.push(pid + '.' + slot + ': missing');
+        return undefined;
+    }
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+        errors.push(pid + '.' + slot + ': is not an object');
+        return undefined;
+    }
+    const primary = str(raw.primary, MAX_SELECTOR_LEN);
+    if (!primary) {
+        errors.push(pid + '.' + slot + ': “primary” is missing or invalid');
+        return undefined;
+    }
+    const out = { primary };
+    const alternatives = strList(raw.alternatives);
+    if (alternatives)
+        out.alternatives = alternatives;
+    const fingerprint = normalizeFingerprint(raw.fingerprint);
+    if (fingerprint)
+        out.fingerprint = fingerprint;
+    // v0.9.0: preferredKeywords (bonus la auto-reparare) — aceleași limite ca nearbyText
+    const preferredKeywords = strList(raw.preferredKeywords, 30, 40);
+    if (preferredKeywords) {
+        out.preferredKeywords = preferredKeywords.map((k) => k.toLowerCase());
+    }
+    return out;
+}
+/**
+ * Validează + sanitizează configul remote (aruncă Error cu detaliile).
+ * Se acceptă DOAR câmpurile cunoscute; orice altceva este eliminat.
+ */
+function normalizeRemoteConfig(raw) {
+    const errors = [];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('invalid remote selectors: the root is not a JSON object');
+    }
+    const version = str(raw.version, MAX_VERSION_LEN);
+    if (!version)
+        errors.push('missing the “version” field (string, max ' + MAX_VERSION_LEN + ' characters)');
+    const providersRaw = raw.providers;
+    if (!providersRaw || typeof providersRaw !== 'object' || Array.isArray(providersRaw)) {
+        throw new Error('invalid remote selectors: ' + errors.concat('missing the “providers” object').join('; '));
+    }
+    const providers = {};
+    for (const [pid, praw] of Object.entries(providersRaw)) {
+        if (!/^[a-z0-9_-]{1,40}$/i.test(pid)) {
+            errors.push('invalid provider name: “' + pid + '”');
+            continue;
+        }
+        if (!praw || typeof praw !== 'object' || Array.isArray(praw)) {
+            errors.push(pid + ': is not an object');
+            continue;
+        }
+        const url = str(praw.url, 300);
+        const urlOk = !!url && /^https?:\/\//i.test(url);
+        if (!urlOk)
+            errors.push(pid + ': the “url” field is missing or not http(s)');
+        const cfg = {};
+        if (urlOk)
+            cfg.url = url;
+        const input = normalizeSlot(praw.input, 'input', pid, errors);
+        const response = normalizeSlot(praw.response, 'response', pid, errors);
+        const newChat = normalizeSlot(praw.newChat, 'newChat', pid, errors);
+        const stopButton = normalizeSlot(praw.stopButton, 'stopButton', pid, errors, true);
+        // v2.5.12 (bug #35): detecția de guest mode (opțională, per provider)
+        const loggedOut = normalizeSlot(praw.loggedOut, 'loggedOut', pid, errors, true);
+        if (input)
+            cfg.input = input;
+        if (response)
+            cfg.response = response;
+        if (newChat)
+            cfg.newChat = newChat;
+        if (stopButton)
+            cfg.stopButton = stopButton;
+        if (loggedOut)
+            cfg.loggedOut = loggedOut;
+        if (cfg.url && cfg.input && cfg.response && cfg.newChat) {
+            providers[pid] = cfg;
+        }
+    }
+    if (!Object.keys(providers).length && !errors.length) {
+        errors.push('no valid provider');
+    }
+    if (errors.length) {
+        throw new Error('selectors remote invalide: ' + errors.slice(0, 5).join('; '));
+    }
+    return {
+        version: version || '',
+        updated: str(raw.updated, MAX_VERSION_LEN) || '',
+        changelog: str(raw.changelog, 500),
+        providers
+    };
+}
+/** Parsează + validează textul JSON al configului remote. */
+function parseRemoteConfig(text) {
+    let raw;
+    try {
+        raw = JSON.parse(text);
+    }
+    catch (e) {
+        throw new Error('JSON invalid: ' + (e?.message ?? String(e)));
+    }
+    return normalizeRemoteConfig(raw);
+}
+/** Descarcă textul configului de la URL-ul dat (http/https, cu timeout). */
+async function fetchRemoteSelectorsText(url, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    const clean = String(url || '').trim();
+    if (!/^https?:\/\//i.test(clean)) {
+        throw new Error('Invalid URL (must be http/https): ' + (clean || '(empty)'));
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.max(500, timeoutMs));
+    try {
+        const res = await fetch(clean, { signal: ctrl.signal, redirect: 'follow' });
+        if (!res.ok) {
+            throw new Error('HTTP ' + res.status + (res.statusText ? ' ' + res.statusText : ''));
+        }
+        const text = await res.text();
+        if (text.length > exports.REMOTE_MAX_CHARS) {
+            throw new Error('response too large (' + text.length + ' > ' + exports.REMOTE_MAX_CHARS + ' characters)');
+        }
+        return text;
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+/**
+ * v0.7.1 — rate limiting 24h pentru verificarea automată de la pornire:
+ * întoarce true doar dacă nu s-a mai verificat niciodată, dacă URL-ul
+ * configurat s-a schimbat, sau dacă au trecut `intervalMs` de la ultima
+ * verificare (manuală SAU automată). Fail-open la orice eroare de citire.
+ */
+function shouldAutoCheck(memento, url, now = Date.now(), intervalMs = exports.AUTO_CHECK_INTERVAL_MS) {
+    if (!memento)
+        return true;
+    try {
+        const rec = memento.get(AUTO_CHECK_STATE_KEY);
+        if (!rec || typeof rec.at !== 'number' || rec.url !== String(url || '').trim()) {
+            return true;
+        }
+        return now - rec.at >= intervalMs;
+    }
+    catch {
+        return true;
+    }
+}
+/** Consemnează momentul ultimei verificări de selectori remote. */
+function markAutoCheck(memento, url, now = Date.now()) {
+    if (!memento)
+        return;
+    const rec = { url: String(url || '').trim(), at: now };
+    try {
+        void Promise.resolve(memento.update(AUTO_CHECK_STATE_KEY, rec)).catch((e) => {
+            log('persisting auto-check failed: ' + (e?.message ?? String(e)));
+        });
+    }
+    catch (e) {
+        log('persisting auto-check failed: ' + (e?.message ?? String(e)));
+    }
+}
+/**
+ * Verifică Gist-ul și aplică update-ul dacă versiunea e mai nouă.
+ * Nu aruncă niciodată — întoarce mereu un RemoteCheckResult.
+ * Cu `memento`, orice verificare (reușită SAU eșuată) resetează ceasul
+ * de 24h al verificării automate (rate limiting în shouldAutoCheck).
+ */
+async function checkAndApplyRemote(url, memento) {
+    const clean = String(url || '').trim();
+    if (!clean) {
+        return { status: 'disabled', message: 'freekit.selectorsUrl is not set' };
+    }
+    const before = selectors_1.selectors.info();
+    log('checking ' + clean + ' (active: v' + before.version + ' — ' + before.source + ')');
+    try {
+        const text = await fetchRemoteSelectorsText(clean);
+        const config = parseRemoteConfig(text);
+        if ((0, selectors_1.compareVersions)(config.version, before.version) <= 0) {
+            log('up to date: remote v' + config.version + ' <= active v' + before.version);
+            return {
+                status: 'up-to-date',
+                version: config.version,
+                previousVersion: before.version,
+                activeVersion: before.version,
+                changelog: config.changelog
+            };
+        }
+        const applied = selectors_1.selectors.applyRemote(config, clean);
+        return {
+            status: applied.applied ? 'updated' : 'up-to-date',
+            version: config.version,
+            previousVersion: before.version,
+            activeVersion: applied.version,
+            cleared: applied.cleared,
+            changelog: config.changelog
+        };
+    }
+    catch (e) {
+        let msg = e?.message ?? String(e);
+        if (e?.name === 'AbortError' || e?.name === 'TimeoutError') {
+            msg = 'timeout downloading the Gist';
+        }
+        log('ERROR checking remote: ' + msg);
+        return {
+            status: 'error',
+            message: msg,
+            previousVersion: before.version,
+            activeVersion: before.version
+        };
+    }
+    finally {
+        // v0.7.1: rate limiting 24h — orice verificare (reușită SAU eșuată)
+        // pornește ceasul, ca pornirile repetate ale VS Code să nu bombardeze
+        // Gist-ul. Comanda manuală rămâne mereu disponibilă.
+        markAutoCheck(memento, clean);
+    }
+}
+//# sourceMappingURL=remoteSelectors.js.map

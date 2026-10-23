@@ -1,0 +1,895 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BrowserManager = void 0;
+exports.detectBrowserPath = detectBrowserPath;
+exports.enableVisibilityOverride = enableVisibilityOverride;
+exports.applyStealthPatches = applyStealthPatches;
+const playwright_1 = require("playwright");
+const vscode = __importStar(require("vscode"));
+const child_process_1 = require("child_process");
+const util_1 = require("util");
+const fs = __importStar(require("fs/promises"));
+const path = __importStar(require("path"));
+const log_1 = require("./log");
+const winwindow_1 = require("./winwindow");
+const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
+const log = (msg) => (0, log_1.logLine)('browser', msg);
+// Domenii de chat AI cunoscute (pentru a reutiliza tab-ul potrivit)
+const CHAT_HOSTS = [
+    'chat.deepseek.com',
+    'chatgpt.com',
+    'chat.openai.com',
+    'gemini.google.com',
+    'claude.ai'
+];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const ONSCREEN_BOUNDS = {
+    left: 60,
+    top: 60,
+    width: 1280,
+    height: 900,
+    windowState: 'normal'
+};
+/**
+ * v1.8.0: starea „în fundal” — fereastra e MINIMIZATĂ (nu doar mutată
+offscreen, care lăsa un buton vizibil în taskbar). Pe Windows butonul din
+taskbar dispare complet prin WS_EX_TOOLWINDOW (vezi winwindow.ts).
+ */
+const MINIMIZED_BOUNDS = {
+    windowState: 'minimized'
+};
+async function fileExists(p) {
+    try {
+        await fs.stat(p);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/** Candidații per platformă (Chrome întâi, apoi Edge). */
+function platformCandidates() {
+    if (process.platform === 'win32') {
+        const pf = process.env['ProgramFiles'] ?? 'C:\\Program Files';
+        const pf86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+        const local = process.env['LOCALAPPDATA'];
+        const list = [
+            path.join(pf, 'Google\\Chrome\\Application\\chrome.exe'),
+            path.join(pf86, 'Google\\Chrome\\Application\\chrome.exe'),
+            path.join(pf, 'Microsoft\\Edge\\Application\\msedge.exe'),
+            path.join(pf86, 'Microsoft\\Edge\\Application\\msedge.exe')
+        ];
+        if (local) {
+            list.splice(2, 0, path.join(local, 'Google\\Chrome\\Application\\chrome.exe'));
+        }
+        return list;
+    }
+    if (process.platform === 'darwin') {
+        return [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+        ];
+    }
+    return [];
+}
+/** Echivalentul `which <nume>` pentru Linux (și fallback prin scanarea PATH). */
+async function whichAny(names) {
+    for (const name of names) {
+        try {
+            const { stdout } = await execFileAsync('which', [name]);
+            const found = stdout.trim();
+            if (found)
+                return found;
+        }
+        catch {
+            /* `which` lipsește sau binarul nu există — încercăm următorul */
+        }
+    }
+    const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+    for (const name of names) {
+        for (const dir of dirs) {
+            const candidate = path.join(dir, name);
+            if (await fileExists(candidate))
+                return candidate;
+        }
+    }
+    return null;
+}
+/**
+ * Detectează executabilul Chrome/Edge.
+ * Windows: Program Files / Program Files (x86) / LOCALAPPDATA.
+ * macOS: /Applications.
+ * Linux: `which google-chrome / chromium / microsoft-edge` (+ scanare PATH).
+ */
+async function detectBrowserPath(override) {
+    if (override) {
+        if (await fileExists(override))
+            return override;
+        log('freekit.chromePath nu există pe disc: ' + override + ' — trec la detectare automată');
+    }
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+        for (const candidate of platformCandidates()) {
+            if (await fileExists(candidate))
+                return candidate;
+        }
+        return null;
+    }
+    return whichAny([
+        'google-chrome',
+        'chromium',
+        'chromium-browser',
+        'microsoft-edge',
+        'microsoft-edge-stable'
+    ]);
+}
+/* =========================================================================
+ * v2.0.5 — ANTI-THROTTLING LA NIVEL DE PAGINĂ
+ * Fereastra Chrome stă minimizată în fundal, iar site-urile SPA își opresc
+ * streaming-ul și timer-ele când `document.visibilityState` devine `hidden`
+ * sau când pagina nu are focus. Din cauza asta, versiunile anterioare ridicau
+ * fereastra în față la fiecare mesaj. Aici forțăm pagina să se creadă
+ * vizibilă/focusată — per pagină, best-effort.
+ * ========================================================================= */
+/** Rulează ÎN PAGINĂ: raportează mereu pagina ca vizibilă și focusată. */
+const forceVisibleInPage = () => {
+    try {
+        Object.defineProperty(Document.prototype, 'visibilityState', {
+            configurable: true,
+            get: () => 'visible'
+        });
+        Object.defineProperty(Document.prototype, 'hidden', {
+            configurable: true,
+            get: () => false
+        });
+    }
+    catch {
+        /* suprapunerea nu e permisă — ignorăm */
+    }
+};
+/** Sesiunile CDP rămân atașate: Chrome resetează suprapunerile la detașare. */
+const visibilitySessions = new WeakMap();
+/** Paginile cu init script-ul deja instalat (anti-duplicare). */
+const visibilityScripts = new WeakSet();
+/**
+ * v2.0.5: forțează pagina să se comporte ca „vizibilă și activă” chiar și cu
+ * fereastra minimizată. CDP nu expune un override direct al lui
+ * `visibilityState` (nu există `Emulation.setPageVisibilityOverride`), așa că
+ * folosim `Emulation.setFocusEmulationEnabled` (pagina se crede focusată și
+ * activă), `Page.setWebLifecycleState: active` (împotriva înghețului) și un
+ * override JS pentru `document.visibilityState` / `document.hidden`.
+ */
+async function enableVisibilityOverride(pg) {
+    if (visibilitySessions.has(pg))
+        return;
+    try {
+        if (!visibilityScripts.has(pg)) {
+            visibilityScripts.add(pg);
+            await pg.addInitScript(forceVisibleInPage);
+            await pg.evaluate(forceVisibleInPage, undefined);
+        }
+        const cdp = await pg.context().newCDPSession(pg);
+        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+        await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+        // păstrăm sesiunea deschisă intenționat (vezi comentariul de mai sus)
+        visibilitySessions.set(pg, cdp);
+        log('visibility override activat (pagina rămâne activă în fundal)');
+    }
+    catch (e) {
+        log('visibility override a eșuat (non-fatal): ' + (e?.message ?? String(e)));
+    }
+}
+/* =========================================================================
+ * v2.0.6 — STEALTH PATCHES (anti-detect)
+ * Patch-uri minime aplicate în pagină imediat după conectare. NU atingem
+ * User-Agent, viewport sau timezone — Chrome e real, cu profil real, deci
+ * acele suprascrieri ar face mai mult rău decât bine.
+ * ========================================================================= */
+/**
+ * Rulează ÎN PAGINĂ: ascunde urmele de automatizare pe care unele site-uri le
+ * verifică. Idempotent — se poate rula de mai multe ori pe aceeași pagină.
+ */
+const applyStealthInPage = () => {
+    try {
+        // 1) navigator.webdriver — definit pe prototip, ca la Chrome normal (nu ca
+        // proprietate proprie pe instanță, care ar fi vizibilă la o simplă enumerare).
+        Object.defineProperty(Navigator.prototype, 'webdriver', {
+            configurable: true,
+            enumerable: true,
+            get: () => false
+        });
+    }
+    catch {
+        /* deja definit non-configurabil — ignorăm */
+    }
+    try {
+        // 2) window.chrome — lipsește pe build-urile fără branding; un stub minimal
+        // e mai puțin suspect decât absența completă a obiectului.
+        const w = window;
+        if (!w.chrome) {
+            w.chrome = {
+                runtime: {},
+                app: { isInstalled: false },
+                loadTimes: () => ({}),
+                csi: () => ({})
+            };
+        }
+    }
+    catch {
+        /* ignorăm */
+    }
+    try {
+        // 3) navigator.permissions.query — unele site-uri întreabă starea
+        // permisiunii de notificări ca semnal de automatizare.
+        const perms = navigator.permissions;
+        if (perms && typeof perms.query === 'function' && !perms.__freekitPerms) {
+            const original = perms.query.bind(perms);
+            perms.query = (params) => {
+                if (params && params.name === 'notifications') {
+                    const state = typeof Notification !== 'undefined' ? Notification.permission : 'default';
+                    return Promise.resolve({
+                        state,
+                        onchange: null,
+                        addEventListener() { },
+                        removeEventListener() { },
+                        dispatchEvent: () => false
+                    });
+                }
+                return original(params);
+            };
+            // marcaj non-enumerabil, ca să nu se vadă în Object.keys
+            Object.defineProperty(perms, '__freekitPerms', {
+                value: true,
+                configurable: true
+            });
+        }
+    }
+    catch {
+        /* ignorăm */
+    }
+};
+/** Paginile cu patch-urile deja instalate (anti-duplicare). */
+const stealthScripts = new WeakSet();
+/**
+ * v2.0.6: aplică patch-urile anti-detect pe o pagină. `addInitScript` le
+ * reinstalează la fiecare navigare, `evaluate` le aplică imediat pe documentul
+ * curent (pagina poate fi deja încărcată). Best-effort: un eșec e doar logat.
+ */
+async function applyStealthPatches(pg) {
+    if (stealthScripts.has(pg))
+        return;
+    stealthScripts.add(pg);
+    try {
+        await pg.addInitScript(applyStealthInPage);
+        await pg.evaluate(applyStealthInPage, undefined);
+        log('stealth patches aplicate (webdriver/chrome/permissions)');
+    }
+    catch (e) {
+        log('stealth patches a eșuat (non-fatal): ' + (e?.message ?? String(e)));
+    }
+}
+/**
+ * v2.0.6: pregătește o pagină pentru automatizare — anti-throttling (pagina se
+ * crede vizibilă/focusată) + patch-urile anti-detect. Ambele sunt no-op dacă au
+ * fost deja aplicate, deci poate fi apelată la fiecare `ensureOpen`.
+ */
+async function preparePage(pg) {
+    await enableVisibilityOverride(pg);
+    await applyStealthPatches(pg);
+}
+class BrowserManager {
+    optsProvider;
+    context;
+    page;
+    /** v0.9.1: ascunderea automată programată de showTemporarily(). */
+    hideTimer;
+    constructor(optsProvider) {
+        this.optsProvider = optsProvider;
+    }
+    /** Opțiunile curente (citite live din setări la fiecare apel). */
+    options() {
+        return this.optsProvider();
+    }
+    cdpUrl() {
+        return 'http://127.0.0.1:' + this.options().port;
+    }
+    /** True dacă portul CDP răspunde. */
+    async isRunning() {
+        try {
+            const res = await fetch(this.cdpUrl() + '/json/version');
+            return res.ok;
+        }
+        catch {
+            return false;
+        }
+    }
+    /** Versiunea browserului conectat (ex: "Chrome/126.0..."), din /json/version. */
+    async chromeVersion() {
+        try {
+            const res = await fetch(this.cdpUrl() + '/json/version');
+            if (!res.ok)
+                return null;
+            const data = (await res.json());
+            return data?.Browser ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async launchChrome() {
+        const opts = this.options();
+        const exe = await detectBrowserPath(opts.chromePath);
+        if (!exe) {
+            throw new Error('I could not find Chrome or Edge on this system. Install one of them or set the path manually in the freekit.chromePath setting.');
+        }
+        await fs.mkdir(opts.profileDir, { recursive: true });
+        const args = [
+            '--remote-debugging-port=' + opts.port,
+            '--user-data-dir=' + opts.profileDir,
+            // Offscreen: dacă fereastra ajunge vizibilă (login/CAPTCHA), poziția e departe de ecran
+            '--window-position=-32000,-32000',
+            '--window-size=1280,900',
+            // v1.8.0: pornește minimizat. ATENȚIE: cu --no-startup-window, fereastra
+            // e creată mai târziu de Playwright și flag-ul e ignorat — minimizarea
+            // reală se face după conectare, prin CDP (applyHiddenState, vezi ensureOpen).
+            '--start-minimized',
+            // Nu porni cu tab în față
+            '--no-startup-window',
+            '--no-first-run',
+            '--no-default-browser-check',
+            // Reduce zgomotul
+            // v2.0.5: CalculateNativeWinOcclusion oprește detecția de ocluzie de pe
+            // Windows (fereastra minimizată nu mai e tratată ca ascunsă). Stă în
+            // ACELAȘI --disable-features: Chrome păstrează doar ultima valoare a
+            // flag-ului, deci un al doilea --disable-features ar re-activa Translate.
+            '--disable-features=Translate,MediaRouter,CalculateNativeWinOcclusion',
+            '--disable-background-networking',
+            // v2.0.5: păstrează randarea/timer-ele active cât fereastra e în fundal —
+            // de-aia NU mai e nevoie s-o aducem în față la fiecare mesaj.
+            '--disable-renderer-backgrounding',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-background-timer-throttling',
+            // Anti-detect (păstrat din implementarea existentă)
+            '--disable-blink-features=AutomationControlled'
+        ];
+        log('lansez ' + exe + ' pe portul ' + opts.port + ' (profil: ' + opts.profileDir + ')');
+        const child = (0, child_process_1.spawn)(exe, args, {
+            detached: true,
+            stdio: 'ignore'
+        });
+        child.unref();
+        // Așteptăm până portul răspunde (max 20 secunde)
+        for (let i = 0; i < 40; i++) {
+            await sleep(500);
+            if (await this.isRunning())
+                return;
+        }
+        throw new Error('Chrome did not respond on port ' + opts.port + ' within 20 seconds ' +
+            '(the port may be occupied by another process — change freekit.cdpPort).');
+    }
+    async ensureOpen(preferHost) {
+        if (this.page &&
+            !this.page.isClosed() &&
+            (!preferHost || this.page.url().includes(preferHost))) {
+            // v2.0.5: reafirmă anti-throttling-ul (ieftin — no-op dacă e deja activ)
+            // v2.0.6: + patch-urile anti-detect (idem no-op după prima aplicare)
+            await preparePage(this.page);
+            return this.page;
+        }
+        let launched = false;
+        if (!(await this.isRunning())) {
+            vscode.window.showInformationMessage('Starting Chrome with the Freekit profile (running in the background)...');
+            await this.launchChrome();
+            launched = true;
+        }
+        try {
+            const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+            this.context = browser.contexts()[0];
+            if (!this.context)
+                throw new Error('No browser context');
+            const pages = this.context.pages();
+            let existing = preferHost
+                ? pages.find((p) => p.url().includes(preferHost))
+                : undefined;
+            if (!existing) {
+                existing = pages.find((p) => CHAT_HOSTS.some((h) => p.url().includes(h)));
+            }
+            if (!existing) {
+                existing = pages.find((p) => p.url().startsWith('http') && !p.url().includes('sign_in'));
+            }
+            const page = existing ?? pages[pages.length - 1] ?? (await this.context.newPage());
+            this.page = page;
+            if (launched) {
+                // v1.8.0: aplică starea „în fundal” abia acum — fereastra există, deci
+                // poate fi minimizată (CDP) și scoasă din taskbar (Windows).
+                await this.applyHiddenState(page).catch((e) => log('applyHiddenState a eșuat: ' + (e?.message ?? String(e))));
+            }
+            // v2.0.5: fereastra poate sta în fundal — randarea rămâne activă
+            // v2.0.6: + patch-urile anti-detect pe pagina nou conectată
+            await preparePage(page);
+            return page;
+        }
+        catch (e) {
+            const msg = 'Chrome connection error: ' + (e?.message ?? String(e));
+            vscode.window.showErrorMessage(msg);
+            throw new Error(msg);
+        }
+    }
+    /**
+     * v2.5.51: tab NOU, separat de chatul activ.
+     *
+     * `screenshot` / `compare_visual` navighează pe un URL arbitrar; dacă am
+     * folosi pagina chatului, conversația aflată în lucru ar fi distrusă. Tab-ul
+     * întors aici nu e reținut în `this.page`, deci `ensureOpen` continuă să
+     * servească pagina chatului. Pornește Chrome dacă nu rulează (ca ensureOpen).
+     */
+    async newPage() {
+        let launched = false;
+        if (!(await this.isRunning())) {
+            vscode.window.showInformationMessage('Starting Chrome with the Freekit profile (running in the background)...');
+            await this.launchChrome();
+            launched = true;
+        }
+        const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+        const ctx = browser.contexts()[0];
+        if (!ctx)
+            throw new Error('No browser context');
+        const page = await ctx.newPage();
+        if (launched) {
+            await this.applyHiddenState(page).catch((e) => log('applyHiddenState a eșuat: ' + (e?.message ?? String(e))));
+        }
+        await preparePage(page);
+        return page;
+    }
+    /**
+     * v2.5.72 (FIX 3): pagina deja deschisă pentru un anumit host — fără a porni
+     * Chrome și fără a schimba pagina activă a chat-ului. `null` = niciun tab
+     * pentru acel host (comenzile de unlock sar peste providerul respectiv).
+     */
+    async pageForHost(host) {
+        const want = String(host || '')
+            .trim()
+            .toLowerCase()
+            .replace(/^https?:\/\//, '')
+            .replace(/^www\./, '')
+            .replace(/[\/?#].*$/, '')
+            .replace(/:\d+$/, '');
+        if (!want || !(await this.isRunning()))
+            return null;
+        try {
+            const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+            const context = browser.contexts()[0];
+            if (!context)
+                return null;
+            for (const p of context.pages()) {
+                let h = '';
+                try {
+                    h = new URL(p.url()).host.toLowerCase().replace(/^www\./, '');
+                }
+                catch {
+                    continue;
+                }
+                if (h === want)
+                    return p;
+            }
+        }
+        catch (e) {
+            log('pageForHost failed: ' + (e?.message ?? String(e)));
+        }
+        return null;
+    }
+    /**
+     * v0.3.0 (P0.3): închide REAL browserul.
+     * browser.close() pe connectOverCDP doar deconectează — așa că:
+     *   1) încercăm CDP `Browser.close` (închidere grațioasă);
+     *   2) dacă portul tot răspunde, omorâm procesul care ascultă pe port
+     *      (netstat+taskkill pe Windows; lsof/fuser pe macOS/Linux).
+     *
+     * @returns true dacă browserul e închis (sau nu rula deloc).
+     */
+    async close() {
+        const opts = this.options();
+        this.cancelScheduledHide();
+        this.context = undefined;
+        this.page = undefined;
+        if (!(await this.isRunning())) {
+            log('close: Chrome nu rula pe portul ' + opts.port);
+            return true;
+        }
+        // 1) închidere grațioasă prin CDP
+        try {
+            const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+            const ctx = browser.contexts()[0];
+            if (ctx) {
+                const pg = ctx.pages()[0] ?? (await ctx.newPage().catch(() => undefined));
+                if (pg) {
+                    const cdp = await pg.context().newCDPSession(pg);
+                    await cdp.send('Browser.close');
+                    log('Browser.close trimis prin CDP');
+                }
+            }
+        }
+        catch (e) {
+            log('Browser.close a eșuat: ' + (e?.message ?? String(e)));
+        }
+        if (await this.waitUntilClosed(3000)) {
+            log('Chrome închis (CDP)');
+            return true;
+        }
+        // 2) fallback dur: procesul care ascultă pe portul CDP
+        log('fallback: închid procesul de pe portul ' + opts.port);
+        if (process.platform === 'win32') {
+            await killByPortWindows(opts.port);
+        }
+        else {
+            await killByPortUnix(opts.port);
+        }
+        const closed = await this.waitUntilClosed(4000);
+        log(closed ? 'Chrome închis (kill pe port)' : 'Chrome încă rulează după kill');
+        return closed;
+    }
+    /** Doar deconectare (la dezactivarea extensiei) — NU omorâm browserul. */
+    disconnect() {
+        this.cancelScheduledHide();
+        this.context = undefined;
+        this.page = undefined;
+    }
+    /* ========================================================================
+     * v0.4.0 — Show Browser: aduce fereastra din fundal (minimizată / la
+     * -32000,-32000) înapoi în ecran și o activează. Pornește Chrome dacă nu
+     * rulează (apoi o mută).
+     * ======================================================================== */
+    /** Aduce fereastra Chrome în față. Nu aruncă — întoarce { ok, message }. */
+    async show() {
+        const opts = this.options();
+        const wasRunning = await this.isRunning();
+        try {
+            if (!wasRunning) {
+                log('show: Chrome nu rula — îl pornesc pe portul ' + opts.port);
+                await this.launchChrome();
+            }
+            const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+            const ctx = browser.contexts()[0];
+            if (!ctx) {
+                return {
+                    ok: false,
+                    message: 'Chrome is running but has no window (context) available.'
+                };
+            }
+            const pages = ctx.pages().filter((p) => !p.isClosed());
+            const pg = pages[0] ?? (await ctx.newPage());
+            const moved = await this.bringWindowOnScreen(pg);
+            if (!moved) {
+                return {
+                    ok: false,
+                    message: 'CDP could not move the Chrome window on screen.'
+                };
+            }
+            log('show: fereastra adusă în față');
+            return {
+                ok: true,
+                message: wasRunning
+                    ? 'The Chrome window was brought to the front.'
+                    : 'Chrome was started and the window is now visible.'
+            };
+        }
+        catch (e) {
+            const msg = 'Could not show Chrome: ' + (e?.message ?? String(e));
+            log(msg);
+            return { ok: false, message: msg };
+        }
+    }
+    /* ========================================================================
+     * v0.9.1 — showTemporarily / hideOffscreen: asistentul de LOGIN/CAPTCHA.
+     * Când un provider cere autentificare (sau rezolvarea unui CAPTCHA),
+     * fereastra din fundal e adusă în față pentru utilizator, iar la final e
+     * trimisă înapoi în fundal (minimizată + fără buton în taskbar, v1.8.0).
+     * ======================================================================== */
+    /** Aduce fereastra în față și o ascunde automat (fundal) după `ms`. */
+    async showTemporarily(ms = 30000) {
+        const res = await this.show();
+        if (res.ok) {
+            this.scheduleHide(ms);
+            log('showTemporarily: fereastra rămâne vizibilă cel mult ' + ms + 'ms');
+        }
+        return res;
+    }
+    /** Ascunde imediat fereastra în fundal (minimizată) — anulează ascunderea programată. */
+    async hideOffscreen() {
+        this.cancelScheduledHide();
+        return this.hideToBackground();
+    }
+    scheduleHide(ms) {
+        this.cancelScheduledHide();
+        this.hideTimer = setTimeout(() => {
+            this.hideTimer = undefined;
+            void this.hideToBackground();
+        }, Math.max(1000, ms));
+        // nu ține procesul Node în viață doar pentru acest timer
+        this.hideTimer.unref?.();
+    }
+    cancelScheduledHide() {
+        if (this.hideTimer) {
+            clearTimeout(this.hideTimer);
+            this.hideTimer = undefined;
+        }
+    }
+    /**
+     * v1.8.0: fereastra trece în fundal — minimizată via CDP, iar pe Windows
+     * butonul dispare complet din taskbar (WS_EX_TOOLWINDOW). Înlocuiește vechea
+     * mutare la -32000,-32000, care lăsa un buton vizibil în taskbar.
+     */
+    async hideToBackground() {
+        try {
+            if (!(await this.isRunning())) {
+                return { ok: true, message: 'Chrome is not running.' };
+            }
+            const browser = await playwright_1.chromium.connectOverCDP(this.cdpUrl());
+            const ctx = browser.contexts()[0];
+            if (!ctx) {
+                return {
+                    ok: false,
+                    message: 'Chrome is running but has no window (context).'
+                };
+            }
+            const pages = ctx.pages().filter((p) => !p.isClosed());
+            const pg = pages[0] ?? (await ctx.newPage());
+            await this.applyHiddenState(pg);
+            log('hideToBackground: fereastra minimizată (fundal)');
+            return { ok: true, message: 'The Chrome window has returned to the background (minimized).' };
+        }
+        catch (e) {
+            const msg = 'Could not hide Chrome: ' + (e?.message ?? String(e));
+            log(msg);
+            return { ok: false, message: msg };
+        }
+    }
+    /**
+     * v1.8.0: starea „în fundal” = minimizat (CDP) + fără buton în taskbar
+     * (Windows, best-effort). Fereastra continuă să randeze pagina normal —
+     * verificat: JS-ul rulează, visibilityState rămâne 'visible'.
+     */
+    async applyHiddenState(pg) {
+        const minimized = await this.setWindowBounds(pg, MINIMIZED_BOUNDS, false);
+        if (!minimized)
+            log('applyHiddenState: CDP nu a putut minimiza fereastra');
+        if ((0, winwindow_1.winWindowSupported)()) {
+            const pid = await this.listenerPid();
+            if (pid) {
+                const hidden = await (0, winwindow_1.setChromeTaskbarHidden)(pid, true);
+                if (!hidden) {
+                    log('applyHiddenState: scoaterea din taskbar a eșuat (fereastra rămâne minimizată)');
+                }
+            }
+        }
+    }
+    /** v1.8.0: PID-ul procesului care ascultă pe portul CDP (Windows; pentru taskbar). */
+    async listenerPid() {
+        if (process.platform !== 'win32')
+            return null;
+        try {
+            const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp']);
+            for (const line of stdout.split(/\r?\n/)) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 5 &&
+                    parts[0].toUpperCase().startsWith('TCP') &&
+                    parts[1].endsWith(':' + this.options().port) &&
+                    parts[3].toUpperCase() === 'LISTENING') {
+                    const pid = Number(parts[4]);
+                    if (Number.isFinite(pid) && pid > 0)
+                        return pid;
+                }
+            }
+        }
+        catch (e) {
+            log('listenerPid a eșuat: ' + (e?.message ?? String(e)));
+        }
+        return null;
+    }
+    /**
+     * Mută fereastra în ecran (CDP Browser.getWindowForTarget +
+     * Browser.setWindowBounds) și activează tab-ul. v1.8.0: readuce întâi
+     * butonul în taskbar (Windows) și „de-minimizează” fereastra.
+     */
+    async bringWindowOnScreen(pg) {
+        if ((0, winwindow_1.winWindowSupported)()) {
+            const pid = await this.listenerPid();
+            if (pid) {
+                // best-effort: dacă eșuează, fereastra apare oricum (doar fără buton)
+                await (0, winwindow_1.setChromeTaskbarHidden)(pid, false);
+            }
+        }
+        return this.setWindowBounds(pg, ONSCREEN_BOUNDS, true);
+    }
+    /**
+     * Setează bounds-ul ferestrei care conține pagina `pg`. Încearcă întâi
+     * sesiunea CDP a paginii; dacă Browser.* nu e permisă acolo, folosește o
+     * sesiune la nivel de browser + Target.getTargets.
+     */
+    async setWindowBounds(pg, bounds, bringToFront) {
+        try {
+            const cdp = await pg.context().newCDPSession(pg);
+            try {
+                const { windowId } = (await cdp.send('Browser.getWindowForTarget', {}));
+                // adapter: metoda e dinamică („Browser.setWindowBounds” în ambii pași),
+                // dar Playwright tipizează send() pe chei concrete
+                const sendAny = (m, p) => cdp.send(m, p);
+                await this.applyBoundsVia(sendAny, windowId, bounds);
+                if (bringToFront) {
+                    try {
+                        await cdp.send('Page.bringToFront');
+                    }
+                    catch {
+                        /* focus best-effort */
+                    }
+                }
+                return true;
+            }
+            finally {
+                await cdp.detach().catch(() => undefined);
+            }
+        }
+        catch (e) {
+            log('setWindowBounds (sesiune pagină) a eșuat: ' + (e?.message ?? String(e)));
+        }
+        try {
+            const browser = pg.context().browser();
+            if (!browser)
+                return false;
+            const bcdp = await browser.newBrowserCDPSession();
+            try {
+                const { targetInfos } = (await bcdp.send('Target.getTargets'));
+                const target = (targetInfos || []).find((t) => t.type === 'page');
+                if (!target)
+                    return false;
+                const { windowId } = (await bcdp.send('Browser.getWindowForTarget', {
+                    targetId: target.targetId
+                }));
+                const sendAny = (m, p) => bcdp.send(m, p);
+                await this.applyBoundsVia(sendAny, windowId, bounds);
+                return true;
+            }
+            finally {
+                await bcdp.detach().catch(() => undefined);
+            }
+        }
+        catch (e) {
+            log('setWindowBounds (sesiune browser) a eșuat: ' + (e?.message ?? String(e)));
+            return false;
+        }
+    }
+    /**
+     * v1.8.0: aplică bounds-ul în doi pași — CDP interzice combinarea lui
+     * `windowState` cu geometria ({left, top, width, height}). Întâi starea
+     * (normal / minimized), apoi poziția + dimensiunea (restaurarea din
+     * minimized funcționează doar așa; verificat E2E).
+     */
+    async applyBoundsVia(send, windowId, bounds) {
+        if (bounds.windowState === 'minimized') {
+            await send('Browser.setWindowBounds', {
+                windowId,
+                bounds: { windowState: 'minimized' }
+            });
+            return;
+        }
+        await send('Browser.setWindowBounds', {
+            windowId,
+            bounds: { windowState: 'normal' }
+        });
+        const geometry = {};
+        if (bounds.left !== undefined)
+            geometry.left = bounds.left;
+        if (bounds.top !== undefined)
+            geometry.top = bounds.top;
+        if (bounds.width !== undefined)
+            geometry.width = bounds.width;
+        if (bounds.height !== undefined)
+            geometry.height = bounds.height;
+        if (Object.keys(geometry).length) {
+            await send('Browser.setWindowBounds', { windowId, bounds: geometry });
+        }
+    }
+    async waitUntilClosed(timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (!(await this.isRunning()))
+                return true;
+            await sleep(250);
+        }
+        return !(await this.isRunning());
+    }
+}
+exports.BrowserManager = BrowserManager;
+/* =========================================================================
+ * v0.3.0 (P0.3): închidere forțată a procesului care ascultă pe portul CDP
+ * ========================================================================= */
+async function killByPortWindows(port) {
+    try {
+        const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp']);
+        const pids = new Set();
+        for (const line of stdout.split(/\r?\n/)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 5 &&
+                parts[0].toUpperCase().startsWith('TCP') &&
+                parts[1].endsWith(':' + port) &&
+                parts[3].toUpperCase() === 'LISTENING') {
+                pids.add(parts[4]);
+            }
+        }
+        if (!pids.size) {
+            log('niciun proces LISTENING pe portul ' + port);
+            return;
+        }
+        for (const pid of pids) {
+            log('taskkill /PID ' + pid + ' /T /F');
+            try {
+                await execFileAsync('taskkill', ['/PID', pid, '/T', '/F']);
+            }
+            catch (e) {
+                log('taskkill a eșuat: ' + (e?.message ?? String(e)));
+            }
+        }
+    }
+    catch (e) {
+        log('netstat a eșuat: ' + (e?.message ?? String(e)));
+    }
+}
+async function killByPortUnix(port) {
+    try {
+        const { stdout } = await execFileAsync('lsof', ['-ti', 'tcp:' + port]);
+        const pids = stdout.split(/\s+/).filter(Boolean);
+        for (const pid of pids) {
+            log('kill -9 ' + pid);
+            try {
+                process.kill(Number(pid), 'SIGKILL');
+            }
+            catch {
+                /* proces deja mort */
+            }
+        }
+        if (pids.length)
+            return;
+    }
+    catch {
+        /* lsof lipsește — încercăm fuser */
+    }
+    try {
+        await execFileAsync('fuser', ['-k', port + '/tcp']);
+    }
+    catch (e) {
+        log('fuser a eșuat: ' + (e?.message ?? String(e)));
+    }
+}
+//# sourceMappingURL=browser.js.map
